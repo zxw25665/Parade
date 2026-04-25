@@ -67,7 +67,7 @@ func (db *sqliteDB) migrate() error {
 		id TEXT PRIMARY KEY,
 		hlc TEXT NOT NULL,
 		sender_id TEXT NOT NULL,
-		receiver_id TEXT NOT NULL,
+		receiver_id TEXT NOT NULL DEFAULT '',
 		content BLOB NOT NULL,
 		type INTEGER NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP

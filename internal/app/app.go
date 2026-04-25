@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 //	"fmt"
-//	"log"
+	"log"
 	"os"
 //	"sync/atomic"
 	"time"
@@ -133,9 +133,15 @@ func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, err
 	var res []map[string]interface{}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
-		dec, _ := a.crypto.DecryptLocal(m.Content)
+		dec, err := a.crypto.DecryptLocal(m.Content)
+		content := "[message corrupted]"
+		if err != nil {
+			log.Printf("GetRecentHistory: failed to decrypt message %s: %v", m.ID, err)
+		} else {
+			content = string(dec)
+		}
 		res = append(res, map[string]interface{}{
-			"id": m.ID, "hlc": m.HLC, "sender": m.SenderID, "content": string(dec), "timestamp": m.CreatedAt,
+			"id": m.ID, "hlc": m.HLC, "sender": m.SenderID, "content": content, "timestamp": m.CreatedAt,
 		})
 	}
 	return res, nil
