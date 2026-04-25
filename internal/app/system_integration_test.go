@@ -100,8 +100,10 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 	// --- 场景 C: 异步接收消息 ---
 	t.Run("Receive", func(t *testing.T) {
 		remoteMsg := "Reply from Bob"
+		// 使用当前时间 + 高计数器值，确保 HLC 排序在 Send 阶段的消息之后
+		ts := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 		bus.Publish(eventbus.TopicMsgReceived, eventbus.MsgReceivedPayload{
-			HLC:      "2026-04-13T21:00:00.000Z_0001_BOB",
+			HLC:      ts + "_9999_TEST",
 			SenderID: "BOB_ID",
 			Content:  []byte(remoteMsg),
 		})
