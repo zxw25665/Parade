@@ -13,6 +13,9 @@ type Message struct {
 	CreatedAt  time.Time `json:"created_at"`  // 本地物理入库时间
 }
 
+// ReceiverIDGroupChat 是群聊消息的接收者标识（空字符串）
+const ReceiverIDGroupChat = ""
+
 // FileLog 对应文件传输对账表（断点续传）
 type FileLog struct {
 	TaskID      string    `json:"task_id"`      // 任务ID (文件 Hash 或路径 Hash)

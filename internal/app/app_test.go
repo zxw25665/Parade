@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
@@ -101,5 +102,61 @@ func TestApp_FullFlow(t *testing.T) {
 	uiData := ui.Payload.(map[string]interface{})
 	if uiData["content"] != "Incoming Message" {
 		t.Errorf("UI content mismatch")
+	}
+}
+
+// TestGetRecentHistory_CorruptedMessage 验证：消息解密失败时返回 "[message corrupted]" 占位符而非空内容
+func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
+	a, _, _, cleanup := setup(t)
+	defer cleanup()
+	defer os.Remove(IdentityFile)
+
+	_ = a.Register("123")
+	_ = a.Login("123")
+	_ = a.JoinTeam("team")
+
+	// 向 DB 中插入一条内容为垃圾数据的消息（模拟磁盘损坏或篡改）
+	_ = a.database.InsertMessage(context.Background(), &db.Message{
+		ID:        uuid.New().String(),
+		HLC:       "2026-04-25T00:00:00.000Z_0001_TEST",
+		SenderID:  "test_node",
+		Content:   []byte("this is not valid encrypted data"),
+		CreatedAt: time.Now(),
+	})
+
+	hist, err := a.GetRecentHistory(10, 0)
+	if err != nil {
+		t.Fatalf("GetRecentHistory failed: %v", err)
+	}
+	if len(hist) == 0 {
+		t.Fatal("expected at least 1 message")
+	}
+
+	// 第一条（最新）应该标记为损坏
+	if hist[0]["content"] != "[message corrupted]" {
+		t.Errorf("expected corrupted placeholder, got %q", hist[0]["content"])
+	}
+}
+
+// TestSendTeamChat_ReceiverID 验证：群聊消息的 ReceiverID 为空字符串（ReceiverIDGroupChat）
+func TestSendTeamChat_ReceiverID(t *testing.T) {
+	a, _, _, cleanup := setup(t)
+	defer cleanup()
+	defer os.Remove(IdentityFile)
+
+	_ = a.Register("123")
+	_ = a.Login("123")
+	_ = a.JoinTeam("team")
+	_ = a.SendTeamChat("test message")
+
+	msgs, err := a.database.GetRecentMessages(context.Background(), 10, 0)
+	if err != nil {
+		t.Fatalf("GetRecentMessages failed: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected at least 1 message")
+	}
+	if msgs[0].ReceiverID != db.ReceiverIDGroupChat {
+		t.Errorf("expected ReceiverID to be %q, got %q", db.ReceiverIDGroupChat, msgs[0].ReceiverID)
 	}
 }
