@@ -1,0 +1,180 @@
+package file
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+)
+
+// FileNode 是本地虚拟文件树的节点。
+type FileNode struct {
+	Name     string      `json:"name"`
+	Path     string      `json:"path"`
+	IsFolder bool        `json:"is_folder"`
+	Size     int64       `json:"size"`
+	Hash     string      `json:"hash"`
+	Children []*FileNode `json:"children,omitempty"`
+}
+
+// Engine 是 file 层实现，负责共享目录元数据、分块读写与断点存储。
+type Engine struct {
+	mu          sync.RWMutex
+	sharedRoots map[string]struct{}
+	runtime     *runtimeState
+}
+
+// NewEngine 创建 file 层引擎。
+func NewEngine() *Engine {
+	return &Engine{
+		sharedRoots: make(map[string]struct{}),
+		runtime:     newRuntimeState(),
+	}
+}
+
+// ShareDirectory 添加一个共享目录根。
+func (e *Engine) ShareDirectory(absPath string) error {
+	root, err := normalizeDir(absPath)
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	e.sharedRoots[root] = struct{}{}
+	e.mu.Unlock()
+	return nil
+}
+
+// GetLocalTree 返回当前所有共享目录的虚拟树。
+func (e *Engine) GetLocalTree() ([]*FileNode, error) {
+	e.mu.RLock()
+	roots := make([]string, 0, len(e.sharedRoots))
+	for root := range e.sharedRoots {
+		roots = append(roots, root)
+	}
+	e.mu.RUnlock()
+
+	sort.Strings(roots)
+	out := make([]*FileNode, 0, len(roots))
+	for _, root := range roots {
+		node, err := buildTree(root)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, node)
+	}
+	return out, nil
+}
+
+// GetVirtualTree 兼容 app.FileEngine 接口。
+func (e *Engine) GetVirtualTree(rootPath string) (interface{}, error) {
+	if strings.TrimSpace(rootPath) == "" {
+		return e.GetLocalTree()
+	}
+
+	root, err := normalizeDir(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	return buildTree(root)
+}
+
+func normalizeDir(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("directory path is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path failed: %w", err)
+	}
+	clean := filepath.Clean(abs)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return "", fmt.Errorf("stat directory failed: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("path is not a directory: %s", clean)
+	}
+	return clean, nil
+}
+
+func buildTree(root string) (*FileNode, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, fmt.Errorf("stat root failed: %w", err)
+	}
+	node := &FileNode{
+		Name:     info.Name(),
+		Path:     root,
+		IsFolder: info.IsDir(),
+		Size:     info.Size(),
+	}
+	if !info.IsDir() {
+		return node, nil
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("read dir failed: %w", err)
+	}
+
+	children := make([]*FileNode, 0, len(entries))
+	for _, entry := range entries {
+		childPath := filepath.Join(root, entry.Name())
+		childNode, childErr := buildTreeFromEntry(childPath, entry)
+		if childErr != nil {
+			return nil, childErr
+		}
+		children = append(children, childNode)
+	}
+
+	sort.Slice(children, func(i, j int) bool {
+		if children[i].IsFolder != children[j].IsFolder {
+			return children[i].IsFolder
+		}
+		return strings.ToLower(children[i].Name) < strings.ToLower(children[j].Name)
+	})
+	node.Children = children
+	return node, nil
+}
+
+func buildTreeFromEntry(path string, entry fs.DirEntry) (*FileNode, error) {
+	info, err := entry.Info()
+	if err != nil {
+		return nil, fmt.Errorf("read entry info failed: %w", err)
+	}
+	node := &FileNode{
+		Name:     entry.Name(),
+		Path:     path,
+		IsFolder: entry.IsDir(),
+		Size:     info.Size(),
+	}
+	if !entry.IsDir() {
+		return node, nil
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("read dir failed: %w", err)
+	}
+	node.Children = make([]*FileNode, 0, len(entries))
+	for _, child := range entries {
+		childPath := filepath.Join(path, child.Name())
+		childNode, childErr := buildTreeFromEntry(childPath, child)
+		if childErr != nil {
+			return nil, childErr
+		}
+		node.Children = append(node.Children, childNode)
+	}
+
+	sort.Slice(node.Children, func(i, j int) bool {
+		if node.Children[i].IsFolder != node.Children[j].IsFolder {
+			return node.Children[i].IsFolder
+		}
+		return strings.ToLower(node.Children[i].Name) < strings.ToLower(node.Children[j].Name)
+	})
+	return node, nil
+}
