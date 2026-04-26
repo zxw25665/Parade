@@ -3,7 +3,9 @@ package network
 import (
 	"context"
 	"sync"
+	"time"
 
+	"github.com/hashicorp/mdns"
 	"parade/internal/core/eventbus"
 )
 
@@ -15,15 +17,25 @@ type PeerInfo struct {
 
 // Discovery 维护节点发现状态，并将变更发布到事件总线。
 type Discovery struct {
-	bus   eventbus.EventBus
-	mu    sync.RWMutex
-	peers map[string]PeerInfo
+	bus       eventbus.EventBus
+	mu        sync.RWMutex
+	peers     map[string]PeerInfo
+	lastSeen  map[string]time.Time
+	ttl       time.Duration
+	sweepTick time.Duration
+
+	// mDNS 相关字段
+	mdnsServer *mdns.Server
+	mdnsDone   chan struct{}
 }
 
 func NewDiscovery(bus eventbus.EventBus) *Discovery {
 	return &Discovery{
-		bus:   bus,
-		peers: make(map[string]PeerInfo),
+		bus:       bus,
+		peers:     make(map[string]PeerInfo),
+		lastSeen:  make(map[string]time.Time),
+		ttl:       30 * time.Second,
+		sweepTick: 5 * time.Second,
 	}
 }
 
@@ -35,6 +47,7 @@ func (d *Discovery) UpsertPeer(peer PeerInfo) {
 
 	d.mu.Lock()
 	d.peers[peer.PubKeyBase64] = peer
+	d.lastSeen[peer.PubKeyBase64] = time.Now()
 	d.mu.Unlock()
 
 	d.bus.Publish(eventbus.TopicPeerJoined, eventbus.PeerEventPayload{
@@ -53,6 +66,7 @@ func (d *Discovery) RemovePeer(pubKey string) {
 	peer, ok := d.peers[pubKey]
 	if ok {
 		delete(d.peers, pubKey)
+		delete(d.lastSeen, pubKey)
 	}
 	d.mu.Unlock()
 
@@ -76,7 +90,142 @@ func (d *Discovery) Snapshot() []PeerInfo {
 	return out
 }
 
-// Run 预留发现循环入口，后续可替换为真实 mDNS/memberlist。
+// GetPeerByPubKey 根据公钥获取对等节点信息。
+func (d *Discovery) GetPeerByPubKey(pubKey string) (PeerInfo, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	peer, exists := d.peers[pubKey]
+	return peer, exists
+}
+
+// Run 启动发现循环和 mDNS 服务。
 func (d *Discovery) Run(ctx context.Context) {
-	<-ctx.Done()
+	d.mdnsDone = make(chan struct{})
+	defer close(d.mdnsDone)
+
+	// 启动 mDNS 查询（持续发现其他节点）
+	go d.startMDNSQuery(ctx)
+
+	// 主循环：定期清理过期的对等节点
+	ticker := time.NewTicker(d.sweepTick)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.sweepExpiredPeers()
+		}
+	}
+}
+
+// startMDNSQuery 启动持续的 mDNS 查询来发现 _parade._tcp 服务。
+func (d *Discovery) startMDNSQuery(ctx context.Context) {
+	// 设置 mDNS 查询参数
+	entriesCh := make(chan *mdns.ServiceEntry, 32)
+	go func() {
+		mdns.Query(&mdns.QueryParam{
+			Service:             "_parade._tcp",
+			Domain:              "local.",
+			Timeout:             time.Second,
+			Entries:             entriesCh,
+			WantUnicastResponse: false,
+		})
+	}()
+
+	// 持续处理发现的服务
+	queryTicker := time.NewTicker(5 * time.Second)
+	defer queryTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry := <-entriesCh:
+			if entry != nil {
+				d.handleMDNSEntry(entry)
+			}
+		case <-queryTicker.C:
+			// 周期性重新查询
+			go func() {
+				mdns.Query(&mdns.QueryParam{
+					Service:             "_parade._tcp",
+					Domain:              "local.",
+					Timeout:             time.Second,
+					Entries:             entriesCh,
+					WantUnicastResponse: false,
+				})
+			}()
+		}
+	}
+}
+
+// handleMDNSEntry 处理发现的 mDNS 服务条目。
+func (d *Discovery) handleMDNSEntry(entry *mdns.ServiceEntry) {
+	if entry == nil || entry.Name == "" {
+		return
+	}
+
+	// 从 TXT 记录中提取公钥
+	pubKey := ""
+	for _, txt := range entry.InfoFields {
+		if len(txt) > 7 && txt[:7] == "pubkey=" {
+			pubKey = txt[7:]
+			break
+		}
+	}
+
+	if pubKey == "" {
+		return
+	}
+
+	// 获取 IP 地址
+	ipAddr := ""
+	if entry.AddrV4 != nil {
+		ipAddr = entry.AddrV4.String()
+	} else if entry.AddrV6 != nil {
+		ipAddr = entry.AddrV6.String()
+	}
+
+	if ipAddr == "" {
+		return
+	}
+
+	// 更新或插入对等节点
+	peer := PeerInfo{
+		PubKeyBase64: pubKey,
+		IPAddress:    ipAddr,
+	}
+	d.UpsertPeer(peer)
+}
+
+func (d *Discovery) sweepExpiredPeers() {
+	now := time.Now()
+
+	expired := make([]PeerInfo, 0)
+
+	d.mu.Lock()
+	for pubKey, last := range d.lastSeen {
+		if now.Sub(last) <= d.ttl {
+			continue
+		}
+		peer, ok := d.peers[pubKey]
+		if !ok {
+			delete(d.lastSeen, pubKey)
+			continue
+		}
+		delete(d.peers, pubKey)
+		delete(d.lastSeen, pubKey)
+		expired = append(expired, peer)
+	}
+	d.mu.Unlock()
+
+	for _, peer := range expired {
+		d.bus.Publish(eventbus.TopicPeerLeft, eventbus.PeerEventPayload{
+			PubKeyBase64: peer.PubKeyBase64,
+			IPAddress:    peer.IPAddress,
+		})
+	}
 }
