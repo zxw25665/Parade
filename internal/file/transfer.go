@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
 )
-
 
 // ErrDownloadCompleted 在 PrepareDownload 检测到 file_log 状态为已完成时返回。
 // 调用方可通过 errors.Is 判断此错误来跳过下载流程。
@@ -198,16 +198,17 @@ func (e *Engine) StartDownload(_, _, _ string) error {
 }
 
 type runtimeState struct {
-	database     db.Database
-	bus          eventbus.EventBus
-	chunkPool    sync.Pool
-	readLimiter  chan struct{}
-	cacheMu      sync.RWMutex
-	treeCache    map[string]treeCacheEntry
-	treeCacheTTL time.Duration
-	hashCache    map[string]hashCacheEntry
+	database      db.Database
+	bus           eventbus.EventBus
+	chunkPool     sync.Pool
+	readLimiter   chan struct{}
+	cacheMu       sync.RWMutex
+	treeCache     map[string]treeCacheEntry
+	hashCache     map[string]hashCacheEntry
 	taskLocks     sync.Map // map[string]*sync.Mutex
 	chunkTrackers sync.Map // map[string]*ChunkTracker
+	watchMu       sync.Mutex
+	watchers      map[string]*rootWatcher
 }
 
 func newRuntimeState() *runtimeState {
@@ -217,22 +218,27 @@ func newRuntimeState() *runtimeState {
 				return make([]byte, DefaultChunkSize)
 			},
 		},
-		readLimiter:  make(chan struct{}, 4),
-		treeCache:    make(map[string]treeCacheEntry),
-		treeCacheTTL: 2 * time.Second,
-		hashCache:    make(map[string]hashCacheEntry),
+		readLimiter: make(chan struct{}, 4),
+		treeCache:   make(map[string]treeCacheEntry),
+		hashCache:   make(map[string]hashCacheEntry),
+		watchers:    make(map[string]*rootWatcher),
 	}
 }
 
 type treeCacheEntry struct {
-	node      *FileNode
-	scannedAt time.Time
+	node *FileNode
 }
 
 type hashCacheEntry struct {
 	hash    string
 	size    int64
 	modTime time.Time
+}
+
+type rootWatcher struct {
+	watcher *fsnotify.Watcher
+	done    chan struct{}
+	once    sync.Once
 }
 
 func (e *Engine) getDB() db.Database {
@@ -344,4 +350,36 @@ func (e *Engine) publishCompleted(taskID string) {
 		return
 	}
 	runtime.bus.Publish(eventbus.TopicFileCompleted, taskID)
+}
+
+func (e *Engine) publishDirChanged(root string) {
+	runtime := e.getRuntime()
+	if runtime == nil || runtime.bus == nil {
+		return
+	}
+	runtime.bus.Publish(eventbus.TopicDirChanged, root)
+}
+
+const hashTaskPrefix = "hash:"
+
+func hashTaskID(hash string) string {
+	return hashTaskPrefix + hash
+}
+
+func (e *Engine) persistHashToFileLog(ctx context.Context, absPath, hash string, size int64) error {
+	database := e.getDB()
+	if database == nil {
+		return nil
+	}
+	log := &db.FileLog{
+		TaskID:      hashTaskID(hash),
+		FilePath:    absPath,
+		PeerID:      "local",
+		Direction:   directionUpload,
+		TotalSize:   size,
+		Transferred: size,
+		Status:      statusCompleted,
+		UpdatedAt:   time.Now(),
+	}
+	return database.UpsertFileLog(ctx, log)
 }

@@ -66,6 +66,98 @@ func TestGetDirectoryChildren(t *testing.T) {
 	}
 }
 
+func TestTreeCacheInvalidatedByFilesystemEvent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	engine := NewEngine()
+	if err := engine.ShareDirectory(root); err != nil {
+		t.Fatalf("share directory failed: %v", err)
+	}
+
+	first, err := engine.GetVirtualTree(root)
+	if err != nil {
+		t.Fatalf("get virtual tree failed: %v", err)
+	}
+	node := first.(*FileNode)
+	if len(node.Children) != 1 {
+		t.Fatalf("expected 1 child before change, got %d", len(node.Children))
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatalf("create new file failed: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		updated, updateErr := engine.GetVirtualTree(root)
+		if updateErr == nil {
+			updatedNode := updated.(*FileNode)
+			if len(updatedNode.Children) == 2 {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("tree cache was not invalidated by filesystem event in time")
+}
+
+func TestUnshareDirectoryStopsWatcher(t *testing.T) {
+	root := t.TempDir()
+	engine := NewEngine()
+	if err := engine.ShareDirectory(root); err != nil {
+		t.Fatalf("share directory failed: %v", err)
+	}
+
+	runtime := engine.getRuntime()
+	runtime.watchMu.Lock()
+	_, existsBefore := runtime.watchers[root]
+	runtime.watchMu.Unlock()
+	if !existsBefore {
+		t.Fatal("watcher should exist before unshare")
+	}
+
+	if err := engine.UnshareDirectory(root); err != nil {
+		t.Fatalf("unshare directory failed: %v", err)
+	}
+
+	runtime.watchMu.Lock()
+	_, existsAfter := runtime.watchers[root]
+	runtime.watchMu.Unlock()
+	if existsAfter {
+		t.Fatal("watcher should be removed after unshare")
+	}
+}
+
+func TestCloseStopsAllWatchers(t *testing.T) {
+	root1 := t.TempDir()
+	root2 := t.TempDir()
+	engine := NewEngine()
+	if err := engine.ShareDirectory(root1); err != nil {
+		t.Fatalf("share root1 failed: %v", err)
+	}
+	if err := engine.ShareDirectory(root2); err != nil {
+		t.Fatalf("share root2 failed: %v", err)
+	}
+
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close should be idempotent: %v", err)
+	}
+
+	runtime := engine.getRuntime()
+	runtime.watchMu.Lock()
+	count := len(runtime.watchers)
+	runtime.watchMu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected 0 watchers after close, got %d", count)
+	}
+}
+
 func TestGetChunk(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "big.bin")
@@ -133,6 +225,42 @@ func TestHashFile_CacheAndRefresh(t *testing.T) {
 	}
 	if third == first {
 		t.Fatalf("hash should refresh after file content change")
+	}
+}
+
+func TestHashFile_PersistToFileLog(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "hash.db")
+	database, err := db.NewSQLiteDB(dbPath)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+	defer database.Close()
+
+	filePath := filepath.Join(root, "hash_persist.txt")
+	content := []byte("persist me")
+	if err := os.WriteFile(filePath, content, 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	engine := NewEngine().WithDatabase(database)
+	hashText, err := engine.HashFile(filePath)
+	if err != nil {
+		t.Fatalf("hash file failed: %v", err)
+	}
+
+	log, err := database.GetFileLog(context.Background(), hashTaskID(hashText))
+	if err != nil {
+		t.Fatalf("get file log failed: %v", err)
+	}
+	if log == nil {
+		t.Fatal("hash file log should not be nil")
+	}
+	if log.FilePath == "" || log.TotalSize != int64(len(content)) {
+		t.Fatalf("unexpected hash file log: %+v", log)
+	}
+	if log.Status != statusCompleted || log.Direction != directionUpload {
+		t.Fatalf("unexpected hash file status/direction: %+v", log)
 	}
 }
 
@@ -420,9 +548,9 @@ func TestSaveChunkOutOfOrder(t *testing.T) {
 		offset int64
 		data   []byte
 	}{
-		{DefaultChunkSize * 2, make([]byte, DefaultChunkSize+100)},  // last chunk (partial)
-		{DefaultChunkSize, make([]byte, DefaultChunkSize)},          // middle chunk
-		{0, make([]byte, DefaultChunkSize)},                         // first chunk
+		{DefaultChunkSize * 2, make([]byte, DefaultChunkSize+100)}, // last chunk (partial)
+		{DefaultChunkSize, make([]byte, DefaultChunkSize)},         // middle chunk
+		{0, make([]byte, DefaultChunkSize)},                        // first chunk
 	}
 
 	for i, c := range chunks {
