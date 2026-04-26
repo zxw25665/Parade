@@ -165,10 +165,14 @@ func (e *Engine) StartDownload(_, _, _ string) error {
 }
 
 type runtimeState struct {
-	database    db.Database
-	bus         eventbus.EventBus
-	chunkPool   sync.Pool
-	readLimiter chan struct{}
+	database     db.Database
+	bus          eventbus.EventBus
+	chunkPool    sync.Pool
+	readLimiter  chan struct{}
+	cacheMu      sync.RWMutex
+	treeCache    map[string]treeCacheEntry
+	treeCacheTTL time.Duration
+	hashCache    map[string]hashCacheEntry
 }
 
 func newRuntimeState() *runtimeState {
@@ -178,8 +182,22 @@ func newRuntimeState() *runtimeState {
 				return make([]byte, DefaultChunkSize)
 			},
 		},
-		readLimiter: make(chan struct{}, 4),
+		readLimiter:  make(chan struct{}, 4),
+		treeCache:    make(map[string]treeCacheEntry),
+		treeCacheTTL: 2 * time.Second,
+		hashCache:    make(map[string]hashCacheEntry),
 	}
+}
+
+type treeCacheEntry struct {
+	node      *FileNode
+	scannedAt time.Time
+}
+
+type hashCacheEntry struct {
+	hash    string
+	size    int64
+	modTime time.Time
 }
 
 func (e *Engine) getDB() db.Database {
