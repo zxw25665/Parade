@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package parade.file.v1;
+
+option go_package = "parade/internal/network/pb;pb";
+
+message FileRequest {
+  string task_id = 1;
+  string peer_id = 2;
+  string file_path = 3;
+  int64 offset = 4;
+  int32 chunk_size = 5;
+}
+
+message FileChunk {
+  string task_id = 1;
+  string peer_id = 2;
+  string file_path = 3;
+  int64 offset = 4;
+  bytes data = 5;
+  int64 total_size = 6;
+  bool eof = 7;
+  string file_hash = 8;
+}
+
+message FileMetaRequest {
+  string peer_id = 1;
+  string file_path = 2;
+}
+
+message FileMetaResponse {
+  string file_path = 1;
+  int64 total_size = 2;
+  string file_hash = 3;
+  int64 chunk_size = 4;
+}
+
+service FileTransferService {
+  rpc DownloadFile(FileRequest) returns (stream FileChunk);
+  rpc GetFileMeta(FileMetaRequest) returns (FileMetaResponse);
+}
