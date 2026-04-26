@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -36,6 +37,7 @@ func (e *Engine) HashFile(path string) (string, error) {
 		cache, ok := runtime.hashCache[absPath]
 		runtime.cacheMu.RUnlock()
 		if ok && cache.size == info.Size() && cache.modTime.Equal(info.ModTime()) {
+			_ = e.persistHashToFileLog(context.Background(), absPath, cache.hash, info.Size())
 			return cache.hash, nil
 		}
 	}
@@ -56,6 +58,7 @@ func (e *Engine) HashFile(path string) (string, error) {
 		}
 		runtime.cacheMu.Unlock()
 	}
+	_ = e.persistHashToFileLog(context.Background(), absPath, hashText, info.Size())
 	return hashText, nil
 }
 

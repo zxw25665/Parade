@@ -8,7 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // FileNode 是本地虚拟文件树的节点。
@@ -46,7 +47,48 @@ func (e *Engine) ShareDirectory(absPath string) error {
 	e.mu.Lock()
 	e.sharedRoots[root] = struct{}{}
 	e.mu.Unlock()
+	if err := e.ensureRootWatcher(root); err != nil {
+		e.mu.Lock()
+		delete(e.sharedRoots, root)
+		e.mu.Unlock()
+		return err
+	}
 	e.invalidateTreeCache(root)
+	return nil
+}
+
+// UnshareDirectory 取消共享目录并释放对应 watcher。
+func (e *Engine) UnshareDirectory(absPath string) error {
+	root, err := normalizeDir(absPath)
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	delete(e.sharedRoots, root)
+	e.mu.Unlock()
+	e.invalidateTreeCache(root)
+	e.stopRootWatcher(root)
+	return nil
+}
+
+// Close 释放 file 层运行时资源（watcher / goroutine）。
+func (e *Engine) Close() error {
+	runtime := e.getRuntime()
+	if runtime == nil {
+		return nil
+	}
+
+	runtime.watchMu.Lock()
+	roots := make([]string, 0, len(runtime.watchers))
+	for root := range runtime.watchers {
+		roots = append(roots, root)
+	}
+	runtime.watchMu.Unlock()
+
+	for _, root := range roots {
+		e.stopRootWatcher(root)
+	}
 	return nil
 }
 
@@ -118,33 +160,16 @@ func (e *Engine) GetDirectoryChildren(absPath string) ([]*FileNode, error) {
 	return children, nil
 }
 
-// WithTreeCacheTTL 配置文件树缓存的有效期。
-func (e *Engine) WithTreeCacheTTL(ttl time.Duration) *Engine {
-	if ttl <= 0 {
-		ttl = 2 * time.Second
-	}
-	runtime := e.getRuntime()
-	if runtime == nil {
-		return e
-	}
-	runtime.cacheMu.Lock()
-	runtime.treeCacheTTL = ttl
-	runtime.cacheMu.Unlock()
-	return e
-}
-
 func (e *Engine) getOrBuildTree(root string) (*FileNode, error) {
 	runtime := e.getRuntime()
 	if runtime == nil {
 		return buildTree(root)
 	}
 
-	now := time.Now()
 	runtime.cacheMu.RLock()
 	cache, ok := runtime.treeCache[root]
-	ttl := runtime.treeCacheTTL
 	runtime.cacheMu.RUnlock()
-	if ok && now.Sub(cache.scannedAt) <= ttl {
+	if ok {
 		return cloneNode(cache.node), nil
 	}
 
@@ -154,10 +179,7 @@ func (e *Engine) getOrBuildTree(root string) (*FileNode, error) {
 	}
 
 	runtime.cacheMu.Lock()
-	runtime.treeCache[root] = treeCacheEntry{
-		node:      cloneNode(node),
-		scannedAt: now,
-	}
+	runtime.treeCache[root] = treeCacheEntry{node: cloneNode(node)}
 	runtime.cacheMu.Unlock()
 	return node, nil
 }
@@ -190,6 +212,113 @@ func cloneNode(node *FileNode) *FileNode {
 		}
 	}
 	return copyNode
+}
+
+func (e *Engine) ensureRootWatcher(root string) error {
+	runtime := e.getRuntime()
+	if runtime == nil {
+		return nil
+	}
+
+	runtime.watchMu.Lock()
+	if _, exists := runtime.watchers[root]; exists {
+		runtime.watchMu.Unlock()
+		return nil
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		runtime.watchMu.Unlock()
+		return fmt.Errorf("create fs watcher failed: %w", err)
+	}
+	dirWatcher := &rootWatcher{
+		watcher: watcher,
+		done:    make(chan struct{}),
+	}
+	runtime.watchers[root] = dirWatcher
+	runtime.watchMu.Unlock()
+
+	if err := walkAndWatch(root, watcher); err != nil {
+		_ = watcher.Close()
+		runtime.watchMu.Lock()
+		delete(runtime.watchers, root)
+		runtime.watchMu.Unlock()
+		return err
+	}
+
+	go e.runRootWatcher(root, dirWatcher)
+	return nil
+}
+
+func (e *Engine) runRootWatcher(root string, rw *rootWatcher) {
+	for {
+		select {
+		case event, ok := <-rw.watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) == 0 {
+				continue
+			}
+			e.invalidateTreeCache(root)
+			e.publishDirChanged(root)
+
+			if event.Op&fsnotify.Create != 0 {
+				info, err := os.Stat(event.Name)
+				if err == nil && info.IsDir() {
+					_ = walkAndWatch(event.Name, rw.watcher)
+				}
+			}
+		case _, ok := <-rw.watcher.Errors:
+			if !ok {
+				return
+			}
+		case <-rw.done:
+			_ = rw.watcher.Close()
+			return
+		}
+	}
+}
+
+func (e *Engine) stopRootWatcher(root string) {
+	runtime := e.getRuntime()
+	if runtime == nil {
+		return
+	}
+
+	runtime.watchMu.Lock()
+	rw, ok := runtime.watchers[root]
+	if ok {
+		delete(runtime.watchers, root)
+	}
+	runtime.watchMu.Unlock()
+	if ok {
+		rw.once.Do(func() {
+			close(rw.done)
+		})
+	}
+}
+
+func walkAndWatch(root string, watcher *fsnotify.Watcher) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if addErr := watcher.Add(path); addErr != nil {
+			if errorsIsPathNotFound(addErr) {
+				return nil
+			}
+			return addErr
+		}
+		return nil
+	})
+}
+
+func errorsIsPathNotFound(err error) bool {
+	return err != nil && os.IsNotExist(err)
 }
 
 func normalizeDir(path string) (string, error) {
