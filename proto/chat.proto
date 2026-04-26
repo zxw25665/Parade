@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package parade.chat.v1;
+
+option go_package = "parade/internal/network/pb/chatpb;chatpb";
+
+message Envelope {
+  string sender_id = 1;
+  bytes payload = 2;
+  string signature = 3;
+}
+
+message MetadataSyncRequest {
+  string sender_id = 1;
+  int64 hlc = 2;
+}
+
+message MetadataSyncResponse {
+  string sender_id = 1;
+  int64 hlc = 2;
+  bytes payload = 3;
+}
+
+service ChatService {
+  rpc StreamChat(stream Envelope) returns (stream Envelope);
+  rpc SyncMetadata(stream MetadataSyncRequest) returns (stream MetadataSyncResponse);
+}
