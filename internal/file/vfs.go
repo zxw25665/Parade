@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // FileNode 是本地虚拟文件树的节点。
@@ -45,6 +46,7 @@ func (e *Engine) ShareDirectory(absPath string) error {
 	e.mu.Lock()
 	e.sharedRoots[root] = struct{}{}
 	e.mu.Unlock()
+	e.invalidateTreeCache(root)
 	return nil
 }
 
@@ -60,7 +62,7 @@ func (e *Engine) GetLocalTree() ([]*FileNode, error) {
 	sort.Strings(roots)
 	out := make([]*FileNode, 0, len(roots))
 	for _, root := range roots {
-		node, err := buildTree(root)
+		node, err := e.getOrBuildTree(root)
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +81,115 @@ func (e *Engine) GetVirtualTree(rootPath string) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildTree(root)
+	return e.getOrBuildTree(root)
+}
+
+// GetDirectoryChildren 按需加载目录下一层节点，不做全量递归扫描。
+func (e *Engine) GetDirectoryChildren(absPath string) ([]*FileNode, error) {
+	root, err := normalizeDir(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("read dir failed: %w", err)
+	}
+
+	children := make([]*FileNode, 0, len(entries))
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil, fmt.Errorf("read entry info failed: %w", infoErr)
+		}
+		children = append(children, &FileNode{
+			Name:     entry.Name(),
+			Path:     filepath.Join(root, entry.Name()),
+			IsFolder: entry.IsDir(),
+			Size:     info.Size(),
+		})
+	}
+	sort.Slice(children, func(i, j int) bool {
+		if children[i].IsFolder != children[j].IsFolder {
+			return children[i].IsFolder
+		}
+		return strings.ToLower(children[i].Name) < strings.ToLower(children[j].Name)
+	})
+	return children, nil
+}
+
+// WithTreeCacheTTL 配置文件树缓存的有效期。
+func (e *Engine) WithTreeCacheTTL(ttl time.Duration) *Engine {
+	if ttl <= 0 {
+		ttl = 2 * time.Second
+	}
+	runtime := e.getRuntime()
+	if runtime == nil {
+		return e
+	}
+	runtime.cacheMu.Lock()
+	runtime.treeCacheTTL = ttl
+	runtime.cacheMu.Unlock()
+	return e
+}
+
+func (e *Engine) getOrBuildTree(root string) (*FileNode, error) {
+	runtime := e.getRuntime()
+	if runtime == nil {
+		return buildTree(root)
+	}
+
+	now := time.Now()
+	runtime.cacheMu.RLock()
+	cache, ok := runtime.treeCache[root]
+	ttl := runtime.treeCacheTTL
+	runtime.cacheMu.RUnlock()
+	if ok && now.Sub(cache.scannedAt) <= ttl {
+		return cloneNode(cache.node), nil
+	}
+
+	node, err := buildTree(root)
+	if err != nil {
+		return nil, err
+	}
+
+	runtime.cacheMu.Lock()
+	runtime.treeCache[root] = treeCacheEntry{
+		node:      cloneNode(node),
+		scannedAt: now,
+	}
+	runtime.cacheMu.Unlock()
+	return node, nil
+}
+
+func (e *Engine) invalidateTreeCache(root string) {
+	runtime := e.getRuntime()
+	if runtime == nil {
+		return
+	}
+	runtime.cacheMu.Lock()
+	delete(runtime.treeCache, root)
+	runtime.cacheMu.Unlock()
+}
+
+func cloneNode(node *FileNode) *FileNode {
+	if node == nil {
+		return nil
+	}
+	copyNode := &FileNode{
+		Name:     node.Name,
+		Path:     node.Path,
+		IsFolder: node.IsFolder,
+		Size:     node.Size,
+		Hash:     node.Hash,
+	}
+	if len(node.Children) > 0 {
+		copyNode.Children = make([]*FileNode, 0, len(node.Children))
+		for _, child := range node.Children {
+			copyNode.Children = append(copyNode.Children, cloneNode(child))
+		}
+	}
+	return copyNode
 }
 
 func normalizeDir(path string) (string, error) {
