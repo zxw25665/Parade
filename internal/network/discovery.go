@@ -80,27 +80,3 @@ func (d *Discovery) Snapshot() []PeerInfo {
 func (d *Discovery) Run(ctx context.Context) {
 	<-ctx.Done()
 }
-package network
-import (
-	"context"
-	"sync"
-	"parade/internal/core/eventbus"
-)
-// PeerInfo 描述发现到的局域网节点。
-type PeerInfo struct {
-	PubKeyBase64 string
-	IPAddress    string
-}
-// Discovery 负责维护本地可见的节点列表，并向 EventBus 抛出上下线事件。
-// 当前实现是内存版发现器，便于 App / Network / UI 的联调。
-type Discovery struct {
-	bus   eventbus.EventBus
-	mu    sync.RWMutex
-	peers map[string]PeerInfo
-}
-func NewDiscovery(bus eventbus.EventBus) *Discovery {
-	return &Discovery{
-		bus:   bus,
-		peers: make(map[string]PeerInfo),
-	}
-}
