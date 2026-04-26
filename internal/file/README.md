@@ -13,6 +13,8 @@
    - 支持注册共享目录根：`ShareDirectory(absPath string) error`
    - 支持递归扫描并返回本地虚拟树：`GetLocalTree() ([]*FileNode, error)`
    - 兼容 `app.FileEngine`：`GetVirtualTree(rootPath string) (interface{}, error)`
+   - 支持目录按需加载（单层）：`GetDirectoryChildren(absPath string) ([]*FileNode, error)`
+   - 内置树缓存（默认 TTL 2 秒），降低大目录重复全量扫描开销
 
 2. **高速分块读取（Sender Side）**
    - 固定 Chunk 大小：`2MB`
@@ -23,6 +25,7 @@
 3. **完整性哈希**
    - `HashFile(path string) (string, error)`
    - 采用 `BLAKE3`（`github.com/zeebo/blake3`）
+   - 按需缓存：基于 `文件绝对路径 + size + modTime` 命中缓存
 
 4. **断点续传状态（Receiver Side）**
    - `PrepareDownload(...)`：读取或初始化 `file_logs`，返回起始 offset
@@ -50,7 +53,7 @@ type FileNode struct {
 
 ---
 
-## 3. 对外接口(接口契约待调整)
+## 3. 对外接口
 
 - `NewEngine() *Engine`
 - `WithDatabase(database db.Database) *Engine`
@@ -58,6 +61,8 @@ type FileNode struct {
 - `ShareDirectory(absPath string) error`
 - `GetLocalTree() ([]*FileNode, error)`
 - `GetVirtualTree(rootPath string) (interface{}, error)`
+- `GetDirectoryChildren(absPath string) ([]*FileNode, error)`
+- `WithTreeCacheTTL(ttl time.Duration) *Engine`
 - `GetChunk(path string, offset int64) ([]byte, error)`
 - `HashFile(path string) (string, error)`
 - `PrepareDownload(ctx, taskID, filePath, peerID, totalSize) (int64, error)`
@@ -104,4 +109,3 @@ _ = eng.SaveChunk(ctx, "task-1", "D:/Downloads/a.zip", "peer-A", chunk, offset, 
 - 与 `network` 文件传输协议对接（真正远端下载会话）
 - 更细粒度的并发写控制、任务清理与失败重试策略
 - 哈希缓存策略（按需计算并持久化）
-
