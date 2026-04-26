@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"parade/internal/core/db"
 )
@@ -43,6 +44,28 @@ func TestGetLocalTree(t *testing.T) {
 	}
 }
 
+func TestGetDirectoryChildren(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "folder"), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	engine := NewEngine()
+	children, err := engine.GetDirectoryChildren(root)
+	if err != nil {
+		t.Fatalf("get directory children failed: %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children, got %d", len(children))
+	}
+	if !children[0].IsFolder {
+		t.Fatalf("expected folder first, got %+v", children[0])
+	}
+}
+
 func TestGetChunk(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "big.bin")
@@ -76,6 +99,40 @@ func TestGetChunk(t *testing.T) {
 	_, err = engine.GetChunk(filePath, int64(size))
 	if err != io.EOF {
 		t.Fatalf("expected EOF at file end, got %v", err)
+	}
+}
+
+func TestHashFile_CacheAndRefresh(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "hash.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	engine := NewEngine()
+	first, err := engine.HashFile(filePath)
+	if err != nil {
+		t.Fatalf("first hash failed: %v", err)
+	}
+
+	second, err := engine.HashFile(filePath)
+	if err != nil {
+		t.Fatalf("second hash failed: %v", err)
+	}
+	if first != second {
+		t.Fatalf("same file should return same hash")
+	}
+
+	if err := os.WriteFile(filePath, []byte("world"), 0o644); err != nil {
+		t.Fatalf("rewrite file failed: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	third, err := engine.HashFile(filePath)
+	if err != nil {
+		t.Fatalf("third hash failed: %v", err)
+	}
+	if third == first {
+		t.Fatalf("hash should refresh after file content change")
 	}
 }
 
