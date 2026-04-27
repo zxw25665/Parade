@@ -128,7 +128,7 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 	}
 
 	// ---- 写入数据 ----
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return fmt.Errorf("open temp file failed: %w", err)
 	}
@@ -296,9 +296,20 @@ func (e *Engine) cleanupTracker(taskID string) {
 }
 
 // GetMissingChunks 返回尚未接收的偏移量列表，供网络层 resume 时使用。
-func (e *Engine) GetMissingChunks(taskID, targetPath string) ([]int64, error) {
+func (e *Engine) GetMissingChunks(ctx context.Context, taskID, targetPath string) ([]int64, error) {
+	database := e.getDB()
+	if database == nil {
+		return nil, errors.New("database not configured")
+	}
+	log, err := database.GetFileLog(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if log == nil {
+		return nil, errors.New("file log not found")
+	}
 	bitmapPath := targetPath + ".parade_tmp.bitmap"
-	tracker, err := e.getOrCreateTracker(taskID, bitmapPath, 0)
+	tracker, err := e.getOrCreateTracker(taskID, bitmapPath, log.TotalSize)
 	if err != nil {
 		return nil, err
 	}

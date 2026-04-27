@@ -22,10 +22,14 @@ func (m *MockNetwork) Start(p int) error { return nil }
 func (m *MockNetwork) Stop() error      { return nil }
 func (m *MockNetwork) BroadcastTeam(b []byte) error { m.LastPayload = b; return nil }
 func (m *MockNetwork) UnicastPrivate(t string, b []byte) error { return nil }
+func (m *MockNetwork) Peers() []map[string]string { return nil }
 
 type MockFile struct{}
 func (m *MockFile) GetVirtualTree(p string) (interface{}, error) { return nil, nil }
 func (m *MockFile) StartDownload(t, v, l string) error { return nil }
+func (m *MockFile) ShareDirectory(p string) error { return nil }
+func (m *MockFile) UnshareDirectory(p string) error { return nil }
+func (m *MockFile) GetDirectoryChildren(p string) (interface{}, error) { return nil, nil }
 
 type MockUI struct {
 	EventName string

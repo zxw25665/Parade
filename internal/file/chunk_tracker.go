@@ -72,6 +72,9 @@ func LoadChunkTracker(bitmapPath string, totalSize int64) (*ChunkTracker, error)
 // 幂等：已完成的追踪器始终返回 true；完全重叠的字节不重复计数。
 func (ct *ChunkTracker) MarkReceived(offset int64, dataLen int64) (bool, error) {
 	if offset < 0 || dataLen <= 0 {
+		if ct.totalSize == 0 {
+			return true, nil
+		}
 		return ct.totalUnique >= ct.totalSize, fmt.Errorf("invalid offset or dataLen")
 	}
 

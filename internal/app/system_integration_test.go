@@ -28,11 +28,15 @@ func (n *IntegrationMockNetwork) BroadcastTeam(b []byte) error {
 	return nil
 }
 func (n *IntegrationMockNetwork) UnicastPrivate(t string, b []byte) error { return nil }
+func (n *IntegrationMockNetwork) Peers() []map[string]string { return nil }
 
 type IntegrationMockFile struct{}
 
 func (f *IntegrationMockFile) GetVirtualTree(p string) (interface{}, error) { return nil, nil }
 func (f *IntegrationMockFile) StartDownload(t, v, l string) error           { return nil }
+func (f *IntegrationMockFile) ShareDirectory(p string) error                 { return nil }
+func (f *IntegrationMockFile) UnshareDirectory(p string) error               { return nil }
+func (f *IntegrationMockFile) GetDirectoryChildren(p string) (interface{}, error) { return nil, nil }
 
 type IntegrationMockUI struct {
 	LastEvent string
