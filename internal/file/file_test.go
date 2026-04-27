@@ -264,6 +264,41 @@ func TestHashFile_PersistToFileLog(t *testing.T) {
 	}
 }
 
+func TestHashFile_RefreshWhenModTimeUnchanged(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "hash_stale_modtime.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("stat file failed: %v", err)
+	}
+	originalModTime := info.ModTime()
+
+	engine := NewEngine()
+	first, err := engine.HashFile(filePath)
+	if err != nil {
+		t.Fatalf("first hash failed: %v", err)
+	}
+
+	if err := os.WriteFile(filePath, []byte("world"), 0o644); err != nil {
+		t.Fatalf("rewrite file failed: %v", err)
+	}
+	if err := os.Chtimes(filePath, time.Now(), originalModTime); err != nil {
+		t.Fatalf("restore mod time failed: %v", err)
+	}
+
+	second, err := engine.HashFile(filePath)
+	if err != nil {
+		t.Fatalf("second hash failed: %v", err)
+	}
+	if second == first {
+		t.Fatalf("hash should refresh even when modTime is unchanged")
+	}
+}
+
 func TestPrepareDownloadAndSaveChunk(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "test.db")
