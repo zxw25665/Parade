@@ -2,11 +2,13 @@ package file
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/zeebo/blake3"
 )
@@ -37,11 +39,25 @@ func (e *Engine) HashFile(path string) (string, error) {
 		cache, ok := runtime.hashCache[absPath]
 		runtime.cacheMu.RUnlock()
 		if ok && cache.size == info.Size() && cache.modTime.Equal(info.ModTime()) {
-			if err := e.persistHashToFileLog(context.Background(), absPath, cache.hash, info.Size()); err != nil {
-	return "", fmt.Errorf("persist hash cache failed: %w", err)
-}
-			return cache.hash, nil
+			fingerprint, err := fileFingerprint(file, info.Size())
+			if err != nil {
+				return "", fmt.Errorf("compute file fingerprint failed: %w", err)
+			}
+			if fingerprint == cache.fingerprint {
+				if err := e.persistHashToFileLog(context.Background(), absPath, cache.hash, info.Size()); err != nil {
+					return "", fmt.Errorf("persist hash cache failed: %w", err)
+				}
+				return cache.hash, nil
+			}
 		}
+	}
+
+	fingerprint, err := fileFingerprint(file, info.Size())
+	if err != nil {
+		return "", fmt.Errorf("compute file fingerprint failed: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("reset file offset failed: %w", err)
 	}
 
 	hash := blake3.New()
@@ -54,9 +70,10 @@ func (e *Engine) HashFile(path string) (string, error) {
 	if runtime != nil {
 		runtime.cacheMu.Lock()
 		runtime.hashCache[absPath] = hashCacheEntry{
-			hash:    hashText,
-			size:    info.Size(),
-			modTime: info.ModTime(),
+			hash:        hashText,
+			size:        info.Size(),
+			modTime:     info.ModTime(),
+			fingerprint: fingerprint,
 		}
 		runtime.cacheMu.Unlock()
 	}
@@ -64,6 +81,59 @@ func (e *Engine) HashFile(path string) (string, error) {
 		return "", fmt.Errorf("persist hash result failed: %w", err)
 	}
 	return hashText, nil
+}
+
+func fileFingerprint(file *os.File, size int64) (string, error) {
+	const sampleSize = 32 * 1024
+
+	hash := blake3.New()
+	offsets := []int64{0}
+
+	if size > sampleSize {
+		offsets = append(offsets, size-sampleSize)
+	}
+	if size > 2*sampleSize {
+		mid := size/2 - sampleSize/2
+		if mid < 0 {
+			mid = 0
+		}
+		offsets = append(offsets, mid)
+	}
+	sort.Slice(offsets, func(i, j int) bool { return offsets[i] < offsets[j] })
+
+	dedupOffsets := offsets[:0]
+	var last int64 = -1
+	for _, offset := range offsets {
+		if offset != last {
+			dedupOffsets = append(dedupOffsets, offset)
+			last = offset
+		}
+	}
+
+	for _, offset := range dedupOffsets {
+		length := sampleSize
+		if remain := size - offset; remain < int64(length) {
+			length = int(remain)
+		}
+		if length <= 0 {
+			continue
+		}
+
+		buf := make([]byte, length)
+		n, err := file.ReadAt(buf, offset)
+		if err != nil && err != io.EOF {
+			return "", err
+		}
+		buf = buf[:n]
+
+		var meta [16]byte
+		binary.LittleEndian.PutUint64(meta[:8], uint64(offset))
+		binary.LittleEndian.PutUint64(meta[8:], uint64(n))
+		_, _ = hash.Write(meta[:])
+		_, _ = hash.Write(buf)
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func filepathAbs(path string) (string, error) {
