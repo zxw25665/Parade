@@ -64,18 +64,22 @@ func (a *App) subscribe(topic string, handler eventbus.EventHandler) {
 	a.subs = append(a.subs, subscription{topic: topic, id: id})
 }
 
+func (a *App) requireFileEngine() error {
+	if a.fileEng == nil {
+		return errors.New("file engine not available")
+	}
+	return nil
+}
+
 func (a *App) registerEventSubscribers() {
-	// 监听节点发现
 	a.subscribe(eventbus.TopicPeerJoined, func(c context.Context, ev eventbus.Event) {
 		a.ui.Notify("ui_peer_joined", ev.Payload)
 	})
 
-	// 监听节点离开
 	a.subscribe(eventbus.TopicPeerLeft, func(c context.Context, ev eventbus.Event) {
 		a.ui.Notify("ui_peer_left", ev.Payload)
 	})
 
-	// 监听收到消息
 	a.subscribe(eventbus.TopicMsgReceived, func(c context.Context, ev eventbus.Event) {
 		payload := ev.Payload.(eventbus.MsgReceivedPayload)
 
@@ -107,12 +111,10 @@ func (a *App) registerEventSubscribers() {
 		})
 	})
 
-	// 监听文件传输进度
 	a.subscribe(eventbus.TopicFileProgress, func(c context.Context, ev eventbus.Event) {
 		a.ui.Notify("ui_file_progress", ev.Payload)
 	})
 
-	// 监听文件传输完成
 	a.subscribe(eventbus.TopicFileCompleted, func(c context.Context, ev eventbus.Event) {
 		a.ui.Notify("ui_file_completed", ev.Payload)
 	})
@@ -145,59 +147,42 @@ func (a *App) JoinTeam(secret string) error {
 	return nil
 }
 
-func (a *App) SendTeamChat(text string) error {
+func (a *App) sendMessageWith(text string, receiverID string, encryptFn func([]byte) ([]byte, error), sendFn func([]byte) error) error {
 	myPub := a.crypto.GetPublicKeyBase64()
 	hlc := GenerateHLC(myPub)
 	raw := []byte(text)
 
-	// 本地存库
 	enc, err := a.crypto.EncryptLocal(raw)
 	if err != nil {
 		return err
 	}
 	if err := a.database.InsertMessage(context.Background(), &db.Message{
-		ID: uuid.New().String(), HLC: hlc, SenderID: myPub, Content: enc, ReceiverID: db.ReceiverIDGroupChat, CreatedAt: time.Now(),
+		ID: uuid.New().String(), HLC: hlc, SenderID: myPub, Content: enc, ReceiverID: receiverID, CreatedAt: time.Now(),
 	}); err != nil {
-		log.Printf("insert sent message failed: %v", err)
+		log.Printf("insert message failed: %v", err)
 	}
 
-	// 网络广播
 	netMsg := eventbus.MsgReceivedPayload{HLC: hlc, SenderID: myPub, Content: raw}
 	jsonBytes, _ := json.Marshal(netMsg)
-	teamEnc, err := a.crypto.EncryptTeam(jsonBytes)
+	encrypted, err := encryptFn(jsonBytes)
 	if err != nil {
 		return err
 	}
-	return a.netEng.BroadcastTeam(teamEnc)
+	return sendFn(encrypted)
+}
+
+func (a *App) SendTeamChat(text string) error {
+	return a.sendMessageWith(text, db.ReceiverIDGroupChat, a.crypto.EncryptTeam, a.netEng.BroadcastTeam)
 }
 
 func (a *App) SendPrivateChat(targetPubKey, text string) error {
 	if targetPubKey == "" {
 		return errors.New("target public key is required")
 	}
-	myPub := a.crypto.GetPublicKeyBase64()
-	hlc := GenerateHLC(myPub)
-	raw := []byte(text)
-
-	// 本地存库
-	enc, err := a.crypto.EncryptLocal(raw)
-	if err != nil {
-		return err
-	}
-	if err := a.database.InsertMessage(context.Background(), &db.Message{
-		ID: uuid.New().String(), HLC: hlc, SenderID: myPub, Content: enc, ReceiverID: targetPubKey, CreatedAt: time.Now(),
-	}); err != nil {
-		log.Printf("insert private message failed: %v", err)
-	}
-
-	// 私聊加密并发送
-	netMsg := eventbus.MsgReceivedPayload{HLC: hlc, SenderID: myPub, Content: raw}
-	jsonBytes, _ := json.Marshal(netMsg)
-	privEnc, err := a.crypto.EncryptPrivate(jsonBytes, targetPubKey)
-	if err != nil {
-		return err
-	}
-	return a.netEng.UnicastPrivate(targetPubKey, privEnc)
+	return a.sendMessageWith(text, targetPubKey,
+		func(payload []byte) ([]byte, error) { return a.crypto.EncryptPrivate(payload, targetPubKey) },
+		func(payload []byte) error { return a.netEng.UnicastPrivate(targetPubKey, payload) },
+	)
 }
 
 func (a *App) GetPeers() []map[string]string {
@@ -205,22 +190,22 @@ func (a *App) GetPeers() []map[string]string {
 }
 
 func (a *App) ShareDirectory(path string) error {
-	if a.fileEng == nil {
-		return errors.New("file engine not available")
+	if err := a.requireFileEngine(); err != nil {
+		return err
 	}
 	return a.fileEng.ShareDirectory(path)
 }
 
 func (a *App) UnshareDirectory(path string) error {
-	if a.fileEng == nil {
-		return errors.New("file engine not available")
+	if err := a.requireFileEngine(); err != nil {
+		return err
 	}
 	return a.fileEng.UnshareDirectory(path)
 }
 
 func (a *App) GetDirectoryChildren(path string) (interface{}, error) {
-	if a.fileEng == nil {
-		return nil, errors.New("file engine not available")
+	if err := a.requireFileEngine(); err != nil {
+		return nil, err
 	}
 	return a.fileEng.GetDirectoryChildren(path)
 }
