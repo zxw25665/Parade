@@ -37,7 +37,9 @@ func (e *Engine) HashFile(path string) (string, error) {
 		cache, ok := runtime.hashCache[absPath]
 		runtime.cacheMu.RUnlock()
 		if ok && cache.size == info.Size() && cache.modTime.Equal(info.ModTime()) {
-			_ = e.persistHashToFileLog(context.Background(), absPath, cache.hash, info.Size())
+			if err := e.persistHashToFileLog(context.Background(), absPath, cache.hash, info.Size()); err != nil {
+	return "", fmt.Errorf("persist hash cache failed: %w", err)
+}
 			return cache.hash, nil
 		}
 	}
@@ -58,7 +60,9 @@ func (e *Engine) HashFile(path string) (string, error) {
 		}
 		runtime.cacheMu.Unlock()
 	}
-	_ = e.persistHashToFileLog(context.Background(), absPath, hashText, info.Size())
+	if err := e.persistHashToFileLog(context.Background(), absPath, hashText, info.Size()); err != nil {
+		return "", fmt.Errorf("persist hash result failed: %w", err)
+	}
 	return hashText, nil
 }
 
