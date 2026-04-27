@@ -93,7 +93,8 @@ func (bus *localEventBus) Subscribe(topic string, handler EventHandler) Subscrip
 }
 
 // Unsubscribe 注销指定的事件监听器。当 topic 下再无订阅者时，
-// 自动停止该 topic 的后台分发 goroutine 并回收资源。
+// 自动取消该 topic 的后台分发 goroutine 并回收资源。
+// 注意：channel 不会在此关闭，由 goroutine 通过 ctx.Done() 退出后自然 GC。
 func (bus *localEventBus) Unsubscribe(topic string, subID SubscriptionID) {
 	bus.mu.Lock()
 	defer bus.mu.Unlock()
@@ -110,10 +111,7 @@ func (bus *localEventBus) Unsubscribe(topic string, subID SubscriptionID) {
 			cancel()
 			delete(bus.cancelFns, topic)
 		}
-		if ch, ok := bus.topicChs[topic]; ok {
-			close(ch)
-			delete(bus.topicChs, topic)
-		}
+		delete(bus.topicChs, topic)
 	}
 }
 
