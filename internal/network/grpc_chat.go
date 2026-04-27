@@ -17,13 +17,6 @@ import (
 	chatpb "parade/internal/network/pb/chatpb"
 )
 
-// Envelope 对应设计文档中的信封结构。
-type Envelope struct {
-	SenderID  string `json:"sender_id"`
-	Payload   []byte `json:"payload"`
-	Signature string `json:"signature"`
-}
-
 // Engine 是网络控制面实现，满足 app.NetworkEngine。
 type Engine struct {
 	mu      sync.RWMutex
@@ -128,6 +121,7 @@ func (e *Engine) Start(port int) error {
 	}
 
 	// 启动 Discovery 循环
+	e.discovery.SetLocalPubKey(e.crypto.GetPublicKeyBase64())
 	e.discoveryCtx, e.discoveryCancel = context.WithCancel(context.Background())
 	e.lifecycleWG.Add(1)
 	go func() {
@@ -323,6 +317,19 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 
 func (e *Engine) Discovery() *Discovery {
 	return e.discovery
+}
+
+// Peers 返回已发现节点的快照（用于 app.NetworkEngine 接口）。
+func (e *Engine) Peers() []map[string]string {
+	peers := e.discovery.Snapshot()
+	out := make([]map[string]string, 0, len(peers))
+	for _, p := range peers {
+		out = append(out, map[string]string{
+			"pubKey": p.PubKeyBase64,
+			"ip":     p.IPAddress,
+		})
+	}
+	return out
 }
 
 func (e *Engine) FilePlane() *FilePlane {

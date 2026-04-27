@@ -27,6 +27,8 @@ type Discovery struct {
 	// mDNS 相关字段
 	mdnsServer *mdns.Server
 	mdnsDone   chan struct{}
+
+	localPubKey string
 }
 
 func NewDiscovery(bus eventbus.EventBus) *Discovery {
@@ -99,6 +101,13 @@ func (d *Discovery) GetPeerByPubKey(pubKey string) (PeerInfo, bool) {
 	return peer, exists
 }
 
+// SetLocalPubKey 设置本地节点的公钥，用于在 discovery 中过滤自身。
+func (d *Discovery) SetLocalPubKey(pubKey string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.localPubKey = pubKey
+}
+
 // Run 启动发现循环和 mDNS 服务。
 func (d *Discovery) Run(ctx context.Context) {
 	d.mdnsDone = make(chan struct{})
@@ -162,7 +171,7 @@ func (d *Discovery) startMDNSQuery(ctx context.Context) {
 	}
 }
 
-// handleMDNSEntry 处理发现的 mDNS 服务条目。
+// handleMDNSEntry 处理发现的 mDNS 服务条目，并过滤自身节点。
 func (d *Discovery) handleMDNSEntry(entry *mdns.ServiceEntry) {
 	if entry == nil || entry.Name == "" {
 		return
@@ -178,6 +187,14 @@ func (d *Discovery) handleMDNSEntry(entry *mdns.ServiceEntry) {
 	}
 
 	if pubKey == "" {
+		return
+	}
+
+	// 过滤自身
+	d.mu.RLock()
+	localKey := d.localPubKey
+	d.mu.RUnlock()
+	if localKey != "" && pubKey == localKey {
 		return
 	}
 
