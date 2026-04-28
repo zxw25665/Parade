@@ -9,9 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // ErrDownloadCompleted 在 PrepareDownload 检测到 file_log 状态为已完成时返回。
@@ -192,10 +193,11 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 	return nil
 }
 
-// StartDownload 兼容 app.FileEngine。
-func (e *Engine) StartDownload(_, _, _ string) error {
-	return errors.New("start download is not connected yet")
-}
+// // StartDownload 兼容 app.FileEngine。
+// // StartDownload方法不再使用
+// func (e *Engine) StartDownload(_, _, _ string) error {
+// 	return errors.New("start download is not connected yet")
+// }
 
 type runtimeState struct {
 	database      db.Database
