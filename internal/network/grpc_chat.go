@@ -10,11 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"github.com/hashicorp/mdns"
+	"parade/internal/file"
 	"parade/internal/core/crypto"
 	"parade/internal/core/eventbus"
 	chatpb "parade/internal/network/pb/chatpb"
+	pb "parade/internal/network/pb"
 )
 
 // Engine 是网络控制面实现，满足 app.NetworkEngine。
@@ -27,6 +30,7 @@ type Engine struct {
 
 	discovery *Discovery
 	filePlane *FilePlane
+	fileEngine *file.Engine
 
 	// gRPC 服务器字段
 	controlListener  net.Listener
@@ -334,6 +338,52 @@ func (e *Engine) Peers() []map[string]string {
 
 func (e *Engine) FilePlane() *FilePlane {
 	return e.filePlane
+}
+
+func (e *Engine) AttachFileEngine(fe *file.Engine) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fileEngine = fe
+}
+
+func (e *Engine) StartDownload(targetPubKey, virtualPath, localSavePath string) error {
+	if targetPubKey == "" || virtualPath == "" || localSavePath == "" {
+		return errors.New("targetPubKey, virtualPath and localSavePath are required")
+	}
+	if e.fileEngine == nil {
+		return errors.New("file engine is not attached")
+	}
+	peer, exists := e.discovery.GetPeerByPubKey(targetPubKey)
+	if !exists {
+		return fmt.Errorf("peer %s not found in discovery", targetPubKey)
+	}
+	conn, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress)
+	if err != nil {
+		return err
+	}
+	client := pb.NewFileTransferServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	meta, err := client.GetFileMeta(ctx, &pb.FileMetaRequest{
+		FilePath: virtualPath,
+	})
+	if err != nil {
+		return fmt.Errorf("get remote file meta failed: %w", err)
+	}
+	return StartDownloadWithRetry(
+		ctx,
+		DownloadDeps{
+			FileEngine: e.fileEngine,
+			Client:     client,
+			LocalPeer:  e.crypto.GetPublicKeyBase64(),
+		},
+		uuid.NewString(),
+		targetPubKey,
+		virtualPath,
+		localSavePath,
+		meta.GetTotalSize(),
+		DefaultDownloadOptions(),
+	)
 }
 
 // getOrDialPeer 获取或建立到对等节点的 gRPC 连接。

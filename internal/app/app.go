@@ -210,6 +210,13 @@ func (a *App) GetDirectoryChildren(path string) (interface{}, error) {
 	return a.fileEng.GetDirectoryChildren(path)
 }
 
+func (a *App) StartDownload(targetPubKey, virtualPath, localSavePath string) error {
+	if a.netEng == nil {
+		return errors.New("network engine not available")
+	}
+	return a.netEng.StartDownload(targetPubKey, virtualPath, localSavePath)
+}
+
 func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, error) {
 	msgs, err := a.database.GetRecentMessages(context.Background(), limit, offset)
 	if err != nil {

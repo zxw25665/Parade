@@ -1,4 +1,4 @@
-package app
+﻿package app
 
 import (
 	"context"
@@ -13,18 +13,22 @@ import (
 	"parade/internal/core/eventbus"
 )
 
-// ---- Mock 对象实现 ----
-
 type MockNetwork struct {
 	LastPayload []byte
 }
+
 func (m *MockNetwork) Start(p int) error { return nil }
-func (m *MockNetwork) Stop() error      { return nil }
-func (m *MockNetwork) BroadcastTeam(b []byte) error { m.LastPayload = b; return nil }
+func (m *MockNetwork) Stop() error { return nil }
+func (m *MockNetwork) BroadcastTeam(b []byte) error {
+	m.LastPayload = b
+	return nil
+}
 func (m *MockNetwork) UnicastPrivate(t string, b []byte) error { return nil }
 func (m *MockNetwork) Peers() []map[string]string { return nil }
+func (m *MockNetwork) StartDownload(t, v, l string) error { return nil }
 
 type MockFile struct{}
+
 func (m *MockFile) GetVirtualTree(p string) (interface{}, error) { return nil, nil }
 func (m *MockFile) StartDownload(t, v, l string) error { return nil }
 func (m *MockFile) ShareDirectory(p string) error { return nil }
@@ -35,16 +39,16 @@ type MockUI struct {
 	EventName string
 	Payload   interface{}
 }
+
 func (m *MockUI) Notify(name string, data interface{}) {
 	m.EventName = name
 	m.Payload = data
 }
 
-// ---- 测试逻辑 ----
-
 func setup(t *testing.T) (*App, *MockNetwork, *MockUI, func()) {
 	dbP, idP := "./test.db", "./test.id"
-	_ = os.Remove(dbP); _ = os.Remove(idP)
+	_ = os.Remove(dbP)
+	_ = os.Remove(idP)
 
 	eb := eventbus.New()
 	cr := crypto.NewEngine()
@@ -57,7 +61,9 @@ func setup(t *testing.T) (*App, *MockNetwork, *MockUI, func()) {
 	app.Startup(context.Background())
 
 	return app, net, ui, func() {
-		d.Close(); os.Remove(dbP); os.Remove(idP)
+		d.Close()
+		os.Remove(dbP)
+		os.Remove(idP)
 	}
 }
 
@@ -65,22 +71,18 @@ func TestApp_FullFlow(t *testing.T) {
 	a, net, ui, cleanup := setup(t)
 	defer cleanup()
 
-	// 1. 认证
 	_ = a.Register("123")
 	_ = a.Login("123")
 	_ = a.JoinTeam("team")
 
-	// 2. 测试发送
 	txt := "Hello World"
 	_ = a.SendTeamChat(txt)
 
-	// 校验库
 	hist, _ := a.GetRecentHistory(1, 0)
 	if hist[0]["content"] != txt {
 		t.Errorf("DB content mismatch")
 	}
 
-	// 校验加密发网
 	dec, _ := a.crypto.DecryptTeam(net.LastPayload)
 	var netPayload eventbus.MsgReceivedPayload
 	_ = json.Unmarshal(dec, &netPayload)
@@ -88,18 +90,15 @@ func TestApp_FullFlow(t *testing.T) {
 		t.Errorf("Network payload mismatch")
 	}
 
-	// 3. 测试接收 (模拟网络层抛出事件)
 	incoming := eventbus.MsgReceivedPayload{
-		HLC: "2026-04-13T12:00:00.000Z_0001_REMOTE",
+		HLC:      "2026-04-13T12:00:00.000Z_0001_REMOTE",
 		SenderID: "remote_node",
-		Content: []byte("Incoming Message"),
+		Content:  []byte("Incoming Message"),
 	}
 	a.evBus.Publish(eventbus.TopicMsgReceived, incoming)
 
-	// 等待异步处理
 	time.Sleep(100 * time.Millisecond)
 
-	// 校验 UI 通知
 	if ui.EventName != "ui_new_message" {
 		t.Errorf("UI not notified")
 	}
@@ -109,7 +108,6 @@ func TestApp_FullFlow(t *testing.T) {
 	}
 }
 
-// TestGetRecentHistory_CorruptedMessage 验证：消息解密失败时返回 "[message corrupted]" 占位符而非空内容
 func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 	a, _, _, cleanup := setup(t)
 	defer cleanup()
@@ -119,7 +117,6 @@ func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 	_ = a.Login("123")
 	_ = a.JoinTeam("team")
 
-	// 向 DB 中插入一条内容为垃圾数据的消息（模拟磁盘损坏或篡改）
 	_ = a.database.InsertMessage(context.Background(), &db.Message{
 		ID:        uuid.New().String(),
 		HLC:       "2026-04-25T00:00:00.000Z_0001_TEST",
@@ -135,14 +132,11 @@ func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 	if len(hist) == 0 {
 		t.Fatal("expected at least 1 message")
 	}
-
-	// 第一条（最新）应该标记为损坏
 	if hist[0]["content"] != "[message corrupted]" {
 		t.Errorf("expected corrupted placeholder, got %q", hist[0]["content"])
 	}
 }
 
-// TestSendTeamChat_ReceiverID 验证：群聊消息的 ReceiverID 为空字符串（ReceiverIDGroupChat）
 func TestSendTeamChat_ReceiverID(t *testing.T) {
 	a, _, _, cleanup := setup(t)
 	defer cleanup()
