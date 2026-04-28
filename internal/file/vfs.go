@@ -194,6 +194,28 @@ func (e *Engine) invalidateTreeCache(root string) {
 	runtime.cacheMu.Unlock()
 }
 
+func (e *Engine) invalidateHashCachePath(path string) {
+	absPath, err := filepathAbs(path)
+	if err != nil {
+		return
+	}
+
+	runtime := e.getRuntime()
+	if runtime == nil {
+		return
+	}
+
+	runtime.cacheMu.Lock()
+	delete(runtime.hashCache, absPath)
+	prefix := absPath + string(os.PathSeparator)
+	for cachedPath := range runtime.hashCache {
+		if strings.HasPrefix(cachedPath, prefix) {
+			delete(runtime.hashCache, cachedPath)
+		}
+	}
+	runtime.cacheMu.Unlock()
+}
+
 func cloneNode(node *FileNode) *FileNode {
 	if node == nil {
 		return nil
@@ -261,6 +283,7 @@ func (e *Engine) runRootWatcher(root string, rw *rootWatcher) {
 				continue
 			}
 			e.invalidateTreeCache(root)
+			e.invalidateHashCachePath(event.Name)
 			e.publishDirChanged(root)
 
 			if event.Op&fsnotify.Create != 0 {

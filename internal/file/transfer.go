@@ -230,9 +230,10 @@ type treeCacheEntry struct {
 }
 
 type hashCacheEntry struct {
-	hash    string
-	size    int64
-	modTime time.Time
+	hash        string
+	size        int64
+	modTime     time.Time
+	fingerprint string
 }
 
 type rootWatcher struct {
