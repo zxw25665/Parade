@@ -1,12 +1,13 @@
-package app
+﻿package app
 
 // NetworkEngine 定义了网络层的行为契约
 type NetworkEngine interface {
 	Start(port int) error
 	Stop() error
-	BroadcastTeam(payload []byte) error                                                        // 局域网广播群聊/信令
-	UnicastPrivate(targetPubKey string, payload []byte) error                                  // 定点私聊
-	Peers() []map[string]string                                                                // 返回已发现节点的公钥和 IP
+	BroadcastTeam(payload []byte) error                       // 局域网广播群聊/信令
+	UnicastPrivate(targetPubKey string, payload []byte) error // 定点私聊
+	Peers() []map[string]string                               // 返回已发现节点的公钥和IP
+	StartDownload(targetPubKey, virtualPath, localSavePath string) error
 }
 
 // FileEngine 定义了文件层的行为契约
