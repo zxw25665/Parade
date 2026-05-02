@@ -48,6 +48,9 @@ func NewApp(bus eventbus.EventBus, cry crypto.Engine, d db.Database, net Network
 // Startup 在 Wails 启动时调用
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	if w, ok := a.ui.(interface{ SetContext(context.Context) }); ok {
+		w.SetContext(ctx)
+	}
 	a.registerEventSubscribers()
 }
 
