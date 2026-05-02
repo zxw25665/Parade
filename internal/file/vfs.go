@@ -127,7 +127,7 @@ func (e *Engine) GetVirtualTree(rootPath string) (interface{}, error) {
 }
 
 // GetDirectoryChildren 按需加载目录下一层节点，不做全量递归扫描。
-func (e *Engine) GetDirectoryChildren(absPath string) ([]*FileNode, error) {
+func (e *Engine) GetDirectoryChildren(absPath string) (interface{}, error) {
 	root, err := normalizeDir(absPath)
 	if err != nil {
 		return nil, err
