@@ -13,7 +13,6 @@ type NetworkEngine interface {
 // FileEngine 定义了文件层的行为契约
 type FileEngine interface {
 	GetVirtualTree(rootPath string) (interface{}, error)
-	StartDownload(targetPubKey, virtualPath, localSavePath string) error
 	ShareDirectory(absPath string) error
 	UnshareDirectory(absPath string) error
 	GetDirectoryChildren(absPath string) (interface{}, error)

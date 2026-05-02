@@ -54,10 +54,11 @@ func TestGetDirectoryChildren(t *testing.T) {
 	}
 
 	engine := NewEngine()
-	children, err := engine.GetDirectoryChildren(root)
+	result, err := engine.GetDirectoryChildren(root)
 	if err != nil {
 		t.Fatalf("get directory children failed: %v", err)
 	}
+	children := result.([]*FileNode)
 	if len(children) != 2 {
 		t.Fatalf("expected 2 children, got %d", len(children))
 	}

@@ -30,7 +30,6 @@ func (m *MockNetwork) StartDownload(t, v, l string) error { return nil }
 type MockFile struct{}
 
 func (m *MockFile) GetVirtualTree(p string) (interface{}, error) { return nil, nil }
-func (m *MockFile) StartDownload(t, v, l string) error { return nil }
 func (m *MockFile) ShareDirectory(p string) error { return nil }
 func (m *MockFile) UnshareDirectory(p string) error { return nil }
 func (m *MockFile) GetDirectoryChildren(p string) (interface{}, error) { return nil, nil }
