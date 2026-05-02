@@ -1,0 +1,13 @@
+{
+    "$schema": "https://wails.io/schemas/config.v2.json",
+    "name": "parade",
+    "outputfilename": "parade",
+    "assetdir": "./frontend/dist",
+    "wailsjsdir": "./frontend/src/lib",
+    "frontend:install": "",
+    "frontend:build": "",
+    "author": {
+        "name": "",
+        "email": ""
+    }
+}
