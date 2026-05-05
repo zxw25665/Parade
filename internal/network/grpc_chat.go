@@ -7,11 +7,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/peer"
 	"github.com/hashicorp/mdns"
 	"parade/internal/file"
 	"parade/internal/core/crypto"
@@ -32,18 +37,32 @@ type Engine struct {
 	filePlane *FilePlane
 	fileEngine *file.Engine
 
-	// gRPC 服务器字段
+	// 控制面 gRPC 服务器字段
 	controlListener  net.Listener
 	controlServer    *grpc.Server
 	chatServiceImpl   *ChatServiceImpl
 	controlPort      int
 
+	// 数据面 gRPC 服务器字段
+	dataListener     net.Listener
+	dataServer       *grpc.Server
+	fileServiceImpl  *FileService
+	dataPort         int
+
 	// mDNS 服务器字段
 	mdnsServer *mdns.Server
 
-	// gRPC 客户端连接池
+	// gRPC 客户端连接池（控制面）
 	clientConns map[string]*grpc.ClientConn // 按 pubKey 索引
 	connMu      sync.RWMutex
+
+	// gRPC 客户端连接池（数据面）
+	dataClientConns map[string]*grpc.ClientConn
+	dataConnMu      sync.RWMutex
+
+	// 对等节点会话（健康监测 + 自动重连）
+	peerSessions map[string]*PeerSession
+	sessionMu    sync.RWMutex
 
 	discoveryCtx    context.Context
 	discoveryCancel context.CancelFunc
@@ -58,12 +77,15 @@ type ChatServiceImpl struct {
 
 func NewEngine(bus eventbus.EventBus, cry crypto.Engine) *Engine {
 	eng := &Engine{
-		bus:         bus,
-		crypto:      cry,
-		discovery:   NewDiscovery(bus),
-		filePlane:   NewFilePlane(bus),
-		controlPort: 4327,
-		clientConns: make(map[string]*grpc.ClientConn),
+		bus:             bus,
+		crypto:          cry,
+		discovery:       NewDiscovery(bus),
+		filePlane:       NewFilePlane(bus),
+		controlPort:     4327,
+		dataPort:        4328,
+		clientConns:     make(map[string]*grpc.ClientConn),
+		dataClientConns: make(map[string]*grpc.ClientConn),
+		peerSessions:    make(map[string]*PeerSession),
 	}
 	eng.chatServiceImpl = &ChatServiceImpl{engine: eng}
 	return eng
@@ -76,56 +98,116 @@ func (e *Engine) Start(port int) error {
 		return nil
 	}
 
-	// 覆盖默认端口
 	if port > 0 {
 		e.controlPort = port
 	}
 
-	// 启动 gRPC 服务器（控制面）
+	keepaliveServerOpts := []grpc.ServerOption{
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:              30 * time.Second,
+			Timeout:           5 * time.Second,
+			MaxConnectionIdle: 10 * time.Minute,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	}
+
+	// 启动控制面 gRPC 服务器（端口 4327）
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", e.controlPort))
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", e.controlPort, err)
 	}
 
 	e.controlListener = listener
-	e.controlServer = grpc.NewServer()
+	e.controlServer = grpc.NewServer(keepaliveServerOpts...)
 	chatpb.RegisterChatServiceServer(e.controlServer, e.chatServiceImpl)
 
-	// 启动 gRPC 服务器（异步）
 	e.lifecycleWG.Add(1)
 	go func() {
 		defer e.lifecycleWG.Done()
 		if err := e.controlServer.Serve(listener); err != nil && err != grpc.ErrServerStopped {
-			// 记录错误但不中断启动
-			fmt.Printf("gRPC server error: %v\n", err)
+			fmt.Printf("gRPC control server error: %v\n", err)
 		}
 	}()
 
-	// 注册 mDNS 服务（将本地节点发布到网络）
-	info := []string{fmt.Sprintf("pubkey=%s", e.crypto.GetPublicKeyBase64())}
+	// 启动数据面 gRPC 服务器（端口 4328）
+	if e.fileEngine != nil {
+		dataListener, err := net.Listen("tcp", fmt.Sprintf(":%d", e.dataPort))
+		if err != nil {
+			return fmt.Errorf("failed to listen on data port %d: %w", e.dataPort, err)
+		}
+
+		e.dataListener = dataListener
+		e.dataServer = grpc.NewServer(keepaliveServerOpts...)
+		e.fileServiceImpl = NewFileService(e.fileEngine, e.crypto.GetPublicKeyBase64())
+		pb.RegisterFileTransferServiceServer(e.dataServer, e.fileServiceImpl)
+
+		e.lifecycleWG.Add(1)
+		go func() {
+			defer e.lifecycleWG.Done()
+			if err := e.dataServer.Serve(dataListener); err != nil && err != grpc.ErrServerStopped {
+				fmt.Printf("gRPC data server error: %v\n", err)
+			}
+		}()
+	}
+
+	// mDNS: select LAN interface and derive team hash
+	iface, lanIP, err := SelectLANInterface()
+	if err != nil {
+		fmt.Printf("[mDNS] WARNING: %v, discovery may not work\n", err)
+	} else {
+		fmt.Printf("[mDNS] selected interface %s (%s)\n", iface.Name, lanIP)
+	}
+
+	teamHash := e.crypto.TeamKeyHash()
+
+	info := []string{
+		fmt.Sprintf("pubkey=%s", e.crypto.GetPublicKeyBase64()),
+		fmt.Sprintf("team=%s", teamHash),
+	}
+	lanIPs := []net.IP{lanIP}
 	service, err := mdns.NewMDNSService(
 		"Parade-"+e.crypto.GetPublicKeyBase64()[:8],
 		"_parade._tcp",
 		"local.",
 		"",
 		e.controlPort,
-		nil,
+		lanIPs,
 		info,
 	)
 	if err != nil {
-		fmt.Printf("failed to create mDNS service: %v\n", err)
-		// 不中断启动，继续运行
-	} else {
-		server, err := mdns.NewServer(&mdns.Config{Zone: service})
-		if err != nil {
-			fmt.Printf("failed to start mDNS server: %v\n", err)
-		} else {
-			e.mdnsServer = server
-		}
+		return fmt.Errorf("failed to create mDNS service: %w", err)
 	}
+
+	mdnsCfg := &mdns.Config{Zone: service}
+	if iface != nil {
+		mdnsCfg.Iface = iface
+	}
+	server, err := mdns.NewServer(mdnsCfg)
+	if err != nil {
+		return fmt.Errorf("failed to start mDNS server: %w (Avahi may be using port 5353)", err)
+	}
+	e.mdnsServer = server
+	fmt.Printf("[mDNS] started, advertising %s on %v (team=%s)\n",
+		"_parade._tcp", lanIPs, truncateKey(teamHash))
 
 	// 启动 Discovery 循环
 	e.discovery.SetLocalPubKey(e.crypto.GetPublicKeyBase64())
+	e.discovery.SetTeamHash(teamHash)
+	if iface != nil {
+		e.discovery.SetIface(iface)
+	}
+	e.discovery.SetOnPeerDiscovered(func(peer PeerInfo) {
+		go func() {
+			if _, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress); err != nil {
+				fmt.Printf("[mDNS] auto-connect to peer %s failed: %v\n", truncateKey(peer.PubKeyBase64), err)
+			} else {
+				fmt.Printf("[mDNS] auto-connected to peer %s @ %s\n", truncateKey(peer.PubKeyBase64), peer.IPAddress)
+			}
+		}()
+	})
 	e.discoveryCtx, e.discoveryCancel = context.WithCancel(context.Background())
 	e.lifecycleWG.Add(1)
 	go func() {
@@ -146,20 +228,27 @@ func (e *Engine) Stop() error {
 	
 	cancel := e.discoveryCancel
 	server := e.controlServer
+	dataSrv := e.dataServer
 	mdnsServer := e.mdnsServer
 	e.started = false
 	e.discoveryCtx = nil
 	e.discoveryCancel = nil
 	e.controlServer = nil
+	e.dataServer = nil
 	e.mdnsServer = nil
 	e.mu.Unlock()
 
-	// 关闭 mDNS 服务器
 	if mdnsServer != nil {
 		mdnsServer.Shutdown()
 	}
 
-	// 关闭所有客户端连接
+	e.sessionMu.Lock()
+	for _, session := range e.peerSessions {
+		session.Stop()
+	}
+	e.peerSessions = make(map[string]*PeerSession)
+	e.sessionMu.Unlock()
+
 	e.connMu.Lock()
 	for _, conn := range e.clientConns {
 		conn.Close()
@@ -167,12 +256,21 @@ func (e *Engine) Stop() error {
 	e.clientConns = make(map[string]*grpc.ClientConn)
 	e.connMu.Unlock()
 
-	// 关闭 gRPC 服务器
+	e.dataConnMu.Lock()
+	for _, conn := range e.dataClientConns {
+		conn.Close()
+	}
+	e.dataClientConns = make(map[string]*grpc.ClientConn)
+	e.dataConnMu.Unlock()
+
+	if dataSrv != nil {
+		dataSrv.GracefulStop()
+	}
+
 	if server != nil {
 		server.GracefulStop()
 	}
 
-	// 取消 Discovery 循环
 	if cancel != nil {
 		cancel()
 	}
@@ -211,9 +309,10 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 	// 异步发送到所有对等节点
 	go func() {
 		envelope := &chatpb.Envelope{
-			SenderId:  e.crypto.GetPublicKeyBase64(),
-			Payload:   payload,
-			Signature: "", // TODO: 填入签名
+			SenderId:   e.crypto.GetPublicKeyBase64(),
+			Payload:    payload,
+			Type:       0,
+			ReceiverId: "",
 		}
 
 		for _, peer := range peers {
@@ -277,10 +376,18 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 
 	// 异步发送消息
 	go func() {
+		// Double encryption: payload is already EncryptPrivate(inner), wrap with EncryptTeam(outer)
+		wrapped, err := e.crypto.EncryptTeam(payload)
+		if err != nil {
+			fmt.Printf("EncryptTeam wrap for private message failed: %v\n", err)
+			return
+		}
+
 		envelope := &chatpb.Envelope{
-			SenderId:  e.crypto.GetPublicKeyBase64(),
-			Payload:   payload,
-			Signature: "", // TODO: 填入签名
+			SenderId:   e.crypto.GetPublicKeyBase64(),
+			Payload:    wrapped,
+			Type:       1,
+			ReceiverId: targetPubKey,
 		}
 
 		conn, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress)
@@ -357,7 +464,7 @@ func (e *Engine) StartDownload(targetPubKey, virtualPath, localSavePath string) 
 	if !exists {
 		return fmt.Errorf("peer %s not found in discovery", targetPubKey)
 	}
-	conn, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress)
+	conn, err := e.getOrDialDataPeer(peer.PubKeyBase64, peer.IPAddress)
 	if err != nil {
 		return err
 	}
@@ -386,45 +493,155 @@ func (e *Engine) StartDownload(targetPubKey, virtualPath, localSavePath string) 
 	)
 }
 
-// getOrDialPeer 获取或建立到对等节点的 gRPC 连接。
+// getOrDialPeer 获取或建立到对等节点的控制面 gRPC 连接。
 func (e *Engine) getOrDialPeer(pubKey, ipAddr string) (*grpc.ClientConn, error) {
 	if pubKey == "" || ipAddr == "" {
 		return nil, errors.New("pubKey and ipAddr are required")
 	}
 
-	// 尝试从池中获取
 	e.connMu.RLock()
 	conn, exists := e.clientConns[pubKey]
 	e.connMu.RUnlock()
 
 	if exists && conn != nil {
+		state := conn.GetState()
+		if state == connectivity.Ready || state == connectivity.Idle {
+			return conn, nil
+		}
+		conn.Close()
+		e.connMu.Lock()
+		delete(e.clientConns, pubKey)
+		e.connMu.Unlock()
+	}
+
+	e.connMu.Lock()
+	defer e.connMu.Unlock()
+
+	conn, exists = e.clientConns[pubKey]
+	if exists && conn != nil {
 		return conn, nil
 	}
 
-	// 新建连接
 	target := fmt.Sprintf("%s:%d", ipAddr, e.controlPort)
-	conn, err := grpc.Dial(target, grpc.WithInsecure())
+	conn, err := grpc.Dial(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                15 * time.Second,
+			Timeout:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial %s: %w", target, err)
 	}
 
-	// 存入池中
-	e.connMu.Lock()
 	e.clientConns[pubKey] = conn
-	e.connMu.Unlock()
+
+	e.sessionMu.Lock()
+	if _, exists := e.peerSessions[pubKey]; !exists {
+		session := NewPeerSession(pubKey, ipAddr, e, conn)
+		e.peerSessions[pubKey] = session
+		session.Start()
+	}
+	e.sessionMu.Unlock()
 
 	return conn, nil
 }
 
-// removePeerConnection 移除到指定对等节点的连接。
-func (e *Engine) removePeerConnection(pubKey string) {
-	e.connMu.Lock()
-	defer e.connMu.Unlock()
+// getOrDialDataPeer 获取或建立到对等节点的数据面 gRPC 连接。
+func (e *Engine) getOrDialDataPeer(pubKey, ipAddr string) (*grpc.ClientConn, error) {
+	if pubKey == "" || ipAddr == "" {
+		return nil, errors.New("pubKey and ipAddr are required")
+	}
 
+	e.dataConnMu.RLock()
+	conn, exists := e.dataClientConns[pubKey]
+	e.dataConnMu.RUnlock()
+
+	if exists && conn != nil {
+		state := conn.GetState()
+		if state == connectivity.Ready || state == connectivity.Idle {
+			return conn, nil
+		}
+		conn.Close()
+		e.dataConnMu.Lock()
+		delete(e.dataClientConns, pubKey)
+		e.dataConnMu.Unlock()
+	}
+
+	e.dataConnMu.Lock()
+	defer e.dataConnMu.Unlock()
+
+	conn, exists = e.dataClientConns[pubKey]
+	if exists && conn != nil {
+		return conn, nil
+	}
+
+	target := fmt.Sprintf("%s:%d", ipAddr, e.dataPort)
+	conn, err := grpc.Dial(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                15 * time.Second,
+			Timeout:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial data %s: %w", target, err)
+	}
+
+	e.dataClientConns[pubKey] = conn
+	return conn, nil
+}
+
+// removePeerConnection 移除到指定对等节点的所有连接并通知 Discovery。
+func (e *Engine) removePeerConnection(pubKey string) {
+	e.sessionMu.Lock()
+	if session, exists := e.peerSessions[pubKey]; exists {
+		session.Stop()
+		delete(e.peerSessions, pubKey)
+	}
+	e.sessionMu.Unlock()
+
+	e.connMu.Lock()
 	if conn, exists := e.clientConns[pubKey]; exists {
 		conn.Close()
 		delete(e.clientConns, pubKey)
 	}
+	e.connMu.Unlock()
+
+	e.dataConnMu.Lock()
+	if conn, exists := e.dataClientConns[pubKey]; exists {
+		conn.Close()
+		delete(e.dataClientConns, pubKey)
+	}
+	e.dataConnMu.Unlock()
+
+	e.discovery.RemovePeer(pubKey)
+}
+
+// getLANIPv4Addrs 返回本机所有非 loopback 的 IPv4 地址。
+func getLANIPv4Addrs() []net.IP {
+	var ips []net.IP
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ips
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				ip4 := ipnet.IP.To4()
+				if ip4 != nil && !ip4.IsLoopback() {
+					ips = append(ips, ip4)
+				}
+			}
+		}
+	}
+	return ips
 }
 
 // StreamChat 实现双向流聊天 RPC。
@@ -452,28 +669,62 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 			continue
 		}
 
-		// 记录发送者
-		if senderID == "" {
-			senderID = envelope.SenderId
+		if envelope.SenderId != "" {
+			if senderID == "" {
+				senderID = envelope.SenderId
+			}
+			if p, ok := peer.FromContext(stream.Context()); ok {
+				ipAddr := ""
+				if tcpAddr, ok := p.Addr.(*net.TCPAddr); ok {
+					ipAddr = tcpAddr.IP.String()
+				} else {
+					host, _, _ := net.SplitHostPort(p.Addr.String())
+					ipAddr = host
+				}
+				if ipAddr != "" {
+					cs.engine.discovery.UpsertPeer(PeerInfo{
+						PubKeyBase64: envelope.SenderId,
+						IPAddress:    ipAddr,
+					})
+				}
+			}
 		}
 
-		// 解密并验证消息
-		plain, err := cs.engine.crypto.DecryptTeam(envelope.Payload)
-		if err != nil {
-			// 记录错误但继续接收
-			fmt.Printf("decrypt error: %v\n", err)
-			continue
+		var plain []byte
+		switch envelope.Type {
+		case 1: // Private: DecryptTeam(outer) → DecryptPrivate(inner)
+			teamPlain, err := cs.engine.crypto.DecryptTeam(envelope.Payload)
+			if err != nil {
+				fmt.Printf("[chat] private message DecryptTeam failed: %v\n", err)
+				continue
+			}
+			plain, err = cs.engine.crypto.DecryptPrivate(teamPlain, envelope.SenderId)
+			if err != nil {
+				fmt.Printf("[chat] private message DecryptPrivate failed: %v\n", err)
+				continue
+			}
+		default: // Type 0 (team) or 99 (test): DecryptTeam only
+			var err error
+			plain, err = cs.engine.crypto.DecryptTeam(envelope.Payload)
+			if err != nil {
+				fmt.Printf("[chat] DecryptTeam failed: %v\n", err)
+				continue
+			}
 		}
 
-		// 构造消息事件
 		var msg eventbus.MsgReceivedPayload
 		if err := json.Unmarshal(plain, &msg); err != nil {
-			fmt.Printf("unmarshal error: %v\n", err)
+			fmt.Printf("[chat] unmarshal error: %v\n", err)
 			continue
 		}
 
-		// 发布到事件总线
-		cs.engine.bus.Publish(eventbus.TopicMsgReceived, msg)
+		if envelope.Type == 1 {
+			msg.ReceiverID = envelope.ReceiverId
+			cs.engine.bus.Publish(eventbus.TopicPrivateMsgReceived, msg)
+		} else {
+			cs.engine.bus.Publish(eventbus.TopicMsgReceived, msg)
+		}
+		cs.engine.discovery.RefreshLastSeen(envelope.SenderId)
 
 		// 响应客户端（确认收到）
 		response := &chatpb.Envelope{
@@ -517,11 +768,215 @@ func (cs *ChatServiceImpl) SyncMetadata(stream chatpb.ChatService_SyncMetadataSe
 		// 响应同步结果
 		response := &chatpb.MetadataSyncResponse{
 			SenderId: cs.engine.crypto.GetPublicKeyBase64(),
-			Hlc:      0, // TODO: 填入本地 HLC
-			Payload:  []byte{}, // TODO: 填入需要同步的消息负载
+			Hlc:      0,
+			Payload:  []byte{},
 		}
 		if err := stream.Send(response); err != nil {
 			return fmt.Errorf("send error: %w", err)
 		}
 	}
+}
+
+// Handshake 实现三阶段握手 RPC。
+func (cs *ChatServiceImpl) Handshake(ctx context.Context, req *chatpb.HandshakeRequest) (*chatpb.HandshakeResponse, error) {
+	teamMatch := false
+	var teamReply []byte
+
+	if plain, err := cs.engine.crypto.DecryptTeam(req.TeamChallenge); err == nil {
+		if strings.HasPrefix(string(plain), "parade-handshake-") {
+			teamMatch = true
+			teamReply, _ = cs.engine.crypto.EncryptTeam(plain)
+		}
+	}
+
+	if req.SenderId != "" {
+		if p, ok := peer.FromContext(ctx); ok {
+			ipAddr := ""
+			if tcpAddr, ok := p.Addr.(*net.TCPAddr); ok {
+				ipAddr = tcpAddr.IP.String()
+			} else {
+				host, _, _ := net.SplitHostPort(p.Addr.String())
+				ipAddr = host
+			}
+			if ipAddr != "" {
+				cs.engine.discovery.UpsertPeer(PeerInfo{
+					PubKeyBase64: req.SenderId,
+					IPAddress:    ipAddr,
+				})
+			}
+		}
+	}
+
+	return &chatpb.HandshakeResponse{
+		RemotePubkey: cs.engine.crypto.GetPublicKeyBase64(),
+		TeamMatch:    teamMatch,
+		TeamReply:    teamReply,
+	}, nil
+}
+
+// ConnectToPeer 执行到指定 IP 的三阶段连接测试。
+func (e *Engine) ConnectToPeer(ipAddress string) (*PeerConnectResult, error) {
+	result := &PeerConnectResult{IP: ipAddress}
+
+	myPubKey := e.crypto.GetPublicKeyBase64()
+	if myPubKey == "" {
+		errStr := "未登录: 没有加载身份密钥，请先在 Identity 页面 Login"
+		result.Phase1 = PhaseResult{Success: false, Label: "无法连接", Error: errStr}
+		result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (依赖 Phase 1)"}
+		return result, nil
+	}
+
+	e.mu.RLock()
+	started := e.started
+	e.mu.RUnlock()
+	if !started {
+		errStr := "网络引擎未启动: 请先 Join Team"
+		result.Phase1 = PhaseResult{Success: false, Label: "无法连接", Error: errStr}
+		result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (依赖 Phase 1)"}
+		return result, nil
+	}
+
+	// ---- Phase 1: gRPC Dial + Handshake RPC ----
+	target := fmt.Sprintf("%s:%d", ipAddress, e.controlPort)
+	conn, err := grpc.Dial(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                15 * time.Second,
+			Timeout:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	)
+	if err != nil {
+		result.Phase1 = PhaseResult{Success: false, Label: "无法连接", Error: fmt.Sprintf("gRPC Dial %s: %v", target, err)}
+		result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (依赖 Phase 1)"}
+		return result, nil
+	}
+
+	client := chatpb.NewChatServiceClient(conn)
+	hsCtx, hsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer hsCancel()
+
+	resp, err := client.Handshake(hsCtx, &chatpb.HandshakeRequest{
+		SenderId:      myPubKey,
+		TeamChallenge: []byte{},
+	})
+	if err != nil {
+		conn.Close()
+		result.Phase1 = PhaseResult{Success: false, Label: "无法连接", Error: fmt.Sprintf("Handshake RPC %s: %v", ipAddress, err)}
+		result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (依赖 Phase 1)"}
+		return result, nil
+	}
+
+	if resp.RemotePubkey == "" {
+		conn.Close()
+		result.Phase1 = PhaseResult{Success: false, Label: "无法连接", Error: fmt.Sprintf("Handshake %s: 远程返回空公钥，可能不是 Parade 实例", ipAddress)}
+		result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: "跳过 (依赖 Phase 1)"}
+		result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (依赖 Phase 1)"}
+		return result, nil
+	}
+
+	result.PubKey = resp.RemotePubkey
+	result.Phase1 = PhaseResult{Success: true, Label: "正常"}
+
+	// ---- Phase 2: Team-key challenge exchange ----
+	nonce := "parade-handshake-" + uuid.NewString()[:8]
+	challenge, err := e.crypto.EncryptTeam([]byte(nonce))
+	if err != nil {
+		result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: fmt.Sprintf("本地加密挑战失败: %v", err)}
+	} else {
+		resp2, err := client.Handshake(hsCtx, &chatpb.HandshakeRequest{
+			SenderId:      myPubKey,
+			TeamChallenge: challenge,
+		})
+		if err != nil {
+			result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: fmt.Sprintf("Handshake RPC (Phase 2) %s: %v", ipAddress, err)}
+		} else if !resp2.TeamMatch {
+			result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: "队伍密钥不匹配: 远程无法解密挑战 (两台设备使用了不同的 Team 口令)"}
+		} else {
+			plain, err := e.crypto.DecryptTeam(resp2.TeamReply)
+			if err != nil {
+				result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: fmt.Sprintf("本地解密回复失败: %v", err)}
+			} else if string(plain) != nonce {
+				result.Phase2 = PhaseResult{Success: false, Label: "队伍相同", Error: fmt.Sprintf("队伍验证失败: 解密结果不匹配 (期望 %s, 得到 %s)", nonce, string(plain))}
+			} else {
+				result.Phase2 = PhaseResult{Success: true, Label: "队伍相同"}
+			}
+		}
+	}
+
+	// Close the temporary handshake connection — Phase 3 uses the pooled connection
+	conn.Close()
+
+	// ---- Phase 3: Test message via persistent pooled connection ----
+	pooledConn, poolErr := e.getOrDialPeer(result.PubKey, ipAddress)
+	if poolErr != nil {
+		result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: fmt.Sprintf("建立持久连接失败: %v", poolErr)}
+		result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (持久连接未建立)"}
+	} else {
+		pooledClient := chatpb.NewChatServiceClient(pooledConn)
+		streamCtx, streamCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer streamCancel()
+
+		stream, err := pooledClient.StreamChat(streamCtx)
+		if err != nil {
+			result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: fmt.Sprintf("创建 StreamChat 失败: %v", err)}
+			result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (StreamChat 未创建)"}
+		} else {
+			defer stream.CloseSend()
+
+			msg := eventbus.MsgReceivedPayload{
+				HLC:      fmt.Sprintf("test-%d", time.Now().UnixNano()),
+				SenderID: myPubKey,
+				Content:  []byte("__PARADE_TEST__"),
+				Type:     99,
+			}
+			jsonBytes, err := json.Marshal(msg)
+			if err != nil {
+				result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: fmt.Sprintf("JSON 序列化失败: %v", err)}
+			} else {
+				encrypted, err := e.crypto.EncryptTeam(jsonBytes)
+				if err != nil {
+					result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: fmt.Sprintf("本地加密测试消息失败: %v", err)}
+				} else {
+					envelope := &chatpb.Envelope{
+						SenderId: myPubKey,
+						Payload:  encrypted,
+					}
+					if err := stream.Send(envelope); err != nil {
+						result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: fmt.Sprintf("StreamChat.Send: %v", err)}
+					} else {
+						result.Phase3Send = PhaseResult{Success: true, Label: "消息已发送"}
+					}
+				}
+			}
+
+			ack, err := stream.Recv()
+			if err != nil {
+				result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: fmt.Sprintf("StreamChat.Recv ack: %v", err)}
+			} else if ack == nil {
+				result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "收到空 ack"}
+			} else {
+				result.Phase3Recv = PhaseResult{Success: true, Label: "已收到对方确认"}
+			}
+		}
+	}
+
+	// 注册 peer 到 discovery (getOrDialPeer 已注册，此处确保 Discovery 更新)
+	if result.PubKey != "" {
+		e.discovery.UpsertPeer(PeerInfo{
+			PubKeyBase64: result.PubKey,
+			IPAddress:    ipAddress,
+		})
+	}
+
+	return result, nil
 }

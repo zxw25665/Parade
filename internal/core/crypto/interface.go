@@ -11,6 +11,8 @@ type Engine interface {
 	GetPublicKeyBase64() string
 	// 设置队伍口令，内部转换为队伍对称密钥
 	SetTeamKey(teamPassword string)
+	// 返回队伍密钥的十六进制哈希，用于 mDNS TXT 同队过滤
+	TeamKeyHash() string
 
 	// ---- 核心加解密机制 ----
 	// 落盘加密：使用用户主密钥加密（落盘前调用）

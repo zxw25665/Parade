@@ -4,8 +4,8 @@
     "outputfilename": "parade",
     "assetdir": "./frontend/dist",
     "wailsjsdir": "./frontend/src/lib",
-    "frontend:install": "",
-    "frontend:build": "",
+    "frontend:install": "npm install",
+    "frontend:build": "npm run build",
     "author": {
         "name": "",
         "email": ""
