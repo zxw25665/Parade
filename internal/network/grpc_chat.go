@@ -104,9 +104,9 @@ func (e *Engine) Start(port int) error {
 
 	keepaliveServerOpts := []grpc.ServerOption{
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Time:              30 * time.Second,
-			Timeout:           5 * time.Second,
-			MaxConnectionIdle: 10 * time.Minute,
+			Time:              60 * time.Second,
+			Timeout:           10 * time.Second,
+			MaxConnectionIdle: 30 * time.Minute,
 		}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             10 * time.Second,
@@ -428,6 +428,35 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 
 func (e *Engine) Discovery() *Discovery {
 	return e.discovery
+}
+
+// OnForeground 前台恢复时触发：立即刷新 mDNS 发现 + 对所有已知 peer 执行健康检查。
+func (e *Engine) OnForeground() {
+	e.mu.RLock()
+	started := e.started
+	e.mu.RUnlock()
+	if !started {
+		return
+	}
+
+	fmt.Println("[network] foreground resume: triggering discovery refresh and peer health checks")
+
+	e.discovery.TriggerQuery()
+
+	e.sessionMu.RLock()
+	sessions := make([]*PeerSession, 0, len(e.peerSessions))
+	for _, ps := range e.peerSessions {
+		sessions = append(sessions, ps)
+	}
+	e.sessionMu.RUnlock()
+
+	for _, ps := range sessions {
+		if !ps.reconnecting.Load() {
+			go func(p *PeerSession) {
+				p.checkAndReconnect()
+			}(ps)
+		}
+	}
 }
 
 // Peers 返回已发现节点的快照（用于 app.NetworkEngine 接口）。
