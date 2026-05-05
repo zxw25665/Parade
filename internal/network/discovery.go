@@ -2,6 +2,9 @@ package network
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -9,13 +12,11 @@ import (
 	"parade/internal/core/eventbus"
 )
 
-// PeerInfo 表示一个已发现节点。
 type PeerInfo struct {
 	PubKeyBase64 string
 	IPAddress    string
 }
 
-// Discovery 维护节点发现状态，并将变更发布到事件总线。
 type Discovery struct {
 	bus       eventbus.EventBus
 	mu        sync.RWMutex
@@ -24,11 +25,13 @@ type Discovery struct {
 	ttl       time.Duration
 	sweepTick time.Duration
 
-	// mDNS 相关字段
-	mdnsServer *mdns.Server
-	mdnsDone   chan struct{}
+	mdnsDone chan struct{}
 
 	localPubKey string
+	teamHash    string
+	iface       *net.Interface
+
+	onPeerDiscovered func(PeerInfo)
 }
 
 func NewDiscovery(bus eventbus.EventBus) *Discovery {
@@ -36,29 +39,37 @@ func NewDiscovery(bus eventbus.EventBus) *Discovery {
 		bus:       bus,
 		peers:     make(map[string]PeerInfo),
 		lastSeen:  make(map[string]time.Time),
-		ttl:       30 * time.Second,
+		ttl:       60 * time.Second,
 		sweepTick: 5 * time.Second,
 	}
 }
 
-// UpsertPeer 添加或更新节点，同时发布加入事件。
 func (d *Discovery) UpsertPeer(peer PeerInfo) {
 	if peer.PubKeyBase64 == "" {
 		return
 	}
 
 	d.mu.Lock()
+	_, exists := d.peers[peer.PubKeyBase64]
 	d.peers[peer.PubKeyBase64] = peer
 	d.lastSeen[peer.PubKeyBase64] = time.Now()
 	d.mu.Unlock()
 
-	d.bus.Publish(eventbus.TopicPeerJoined, eventbus.PeerEventPayload{
-		PubKeyBase64: peer.PubKeyBase64,
-		IPAddress:    peer.IPAddress,
-	})
+	if !exists {
+		d.bus.Publish(eventbus.TopicPeerJoined, eventbus.PeerEventPayload{
+			PubKeyBase64: peer.PubKeyBase64,
+			IPAddress:    peer.IPAddress,
+		})
+
+		d.mu.RLock()
+		cb := d.onPeerDiscovered
+		d.mu.RUnlock()
+		if cb != nil {
+			cb(peer)
+		}
+	}
 }
 
-// RemovePeer 删除节点，同时发布离开事件。
 func (d *Discovery) RemovePeer(pubKey string) {
 	if pubKey == "" {
 		return
@@ -80,7 +91,6 @@ func (d *Discovery) RemovePeer(pubKey string) {
 	}
 }
 
-// Snapshot 返回当前发现节点的快照。
 func (d *Discovery) Snapshot() []PeerInfo {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -92,7 +102,6 @@ func (d *Discovery) Snapshot() []PeerInfo {
 	return out
 }
 
-// GetPeerByPubKey 根据公钥获取对等节点信息。
 func (d *Discovery) GetPeerByPubKey(pubKey string) (PeerInfo, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -101,22 +110,47 @@ func (d *Discovery) GetPeerByPubKey(pubKey string) (PeerInfo, bool) {
 	return peer, exists
 }
 
-// SetLocalPubKey 设置本地节点的公钥，用于在 discovery 中过滤自身。
 func (d *Discovery) SetLocalPubKey(pubKey string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.localPubKey = pubKey
 }
 
-// Run 启动发现循环和 mDNS 服务。
+func (d *Discovery) SetTeamHash(hash string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.teamHash = hash
+}
+
+func (d *Discovery) SetIface(iface *net.Interface) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.iface = iface
+}
+
+func (d *Discovery) SetOnPeerDiscovered(fn func(PeerInfo)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.onPeerDiscovered = fn
+}
+
+func (d *Discovery) RefreshLastSeen(pubKey string) {
+	if pubKey == "" {
+		return
+	}
+	d.mu.Lock()
+	if _, ok := d.lastSeen[pubKey]; ok {
+		d.lastSeen[pubKey] = time.Now()
+	}
+	d.mu.Unlock()
+}
+
 func (d *Discovery) Run(ctx context.Context) {
 	d.mdnsDone = make(chan struct{})
 	defer close(d.mdnsDone)
 
-	// 启动 mDNS 查询（持续发现其他节点）
 	go d.startMDNSQuery(ctx)
 
-	// 主循环：定期清理过期的对等节点
 	ticker := time.NewTicker(d.sweepTick)
 	defer ticker.Stop()
 
@@ -130,59 +164,85 @@ func (d *Discovery) Run(ctx context.Context) {
 	}
 }
 
-// startMDNSQuery 启动持续的 mDNS 查询来发现 _parade._tcp 服务。
 func (d *Discovery) startMDNSQuery(ctx context.Context) {
-	// 设置 mDNS 查询参数
-	entriesCh := make(chan *mdns.ServiceEntry, 32)
-	go func() {
-		mdns.Query(&mdns.QueryParam{
-			Service:             "_parade._tcp",
-			Domain:              "local.",
-			Timeout:             time.Second,
-			Entries:             entriesCh,
-			WantUnicastResponse: false,
-		})
-	}()
-
-	// 持续处理发现的服务
 	queryTicker := time.NewTicker(5 * time.Second)
 	defer queryTicker.Stop()
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	d.runMDNSQuery(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case entry := <-entriesCh:
-			if entry != nil {
-				d.handleMDNSEntry(entry)
-			}
 		case <-queryTicker.C:
-			// 周期性重新查询
-			go func() {
-				mdns.Query(&mdns.QueryParam{
-					Service:             "_parade._tcp",
-					Domain:              "local.",
-					Timeout:             time.Second,
-					Entries:             entriesCh,
-					WantUnicastResponse: false,
-				})
-			}()
+			d.runMDNSQuery(ctx)
 		}
 	}
 }
 
-// handleMDNSEntry 处理发现的 mDNS 服务条目，并过滤自身节点。
+func (d *Discovery) runMDNSQuery(ctx context.Context) {
+	entriesCh := make(chan *mdns.ServiceEntry, 32)
+
+	d.mu.RLock()
+	iface := d.iface
+	d.mu.RUnlock()
+
+	go func() {
+		params := &mdns.QueryParam{
+			Service:             "_parade._tcp",
+			Domain:              "local.",
+			Timeout:             5 * time.Second,
+			Entries:             entriesCh,
+			WantUnicastResponse: false,
+			Interface:           iface,
+		}
+		if err := mdns.Query(params); err != nil {
+			fmt.Printf("[mDNS] query failed: %v\n", err)
+		}
+		close(entriesCh)
+	}()
+
+	entryCount := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, ok := <-entriesCh:
+			if !ok {
+				if entryCount == 0 {
+					fmt.Printf("[mDNS] query completed: no _parade._tcp entries found\n")
+				}
+				return
+			}
+			if entry != nil {
+				entryCount++
+				d.handleMDNSEntry(entry)
+			}
+		}
+	}
+}
+
 func (d *Discovery) handleMDNSEntry(entry *mdns.ServiceEntry) {
 	if entry == nil || entry.Name == "" {
 		return
 	}
 
-	// 从 TXT 记录中提取公钥
-	pubKey := ""
+	fmt.Printf("[mDNS] entry: Name=%q AddrV4=%v Port=%d TXT=%v\n",
+		entry.Name, entry.AddrV4, entry.Port, entry.InfoFields)
+
+	var pubKey, entryTeamHash string
 	for _, txt := range entry.InfoFields {
-		if len(txt) > 7 && txt[:7] == "pubkey=" {
+		if strings.HasPrefix(txt, "pubkey=") {
 			pubKey = txt[7:]
-			break
+		}
+		if strings.HasPrefix(txt, "team=") {
+			entryTeamHash = txt[5:]
 		}
 	}
 
@@ -190,15 +250,21 @@ func (d *Discovery) handleMDNSEntry(entry *mdns.ServiceEntry) {
 		return
 	}
 
-	// 过滤自身
 	d.mu.RLock()
 	localKey := d.localPubKey
+	localTeamHash := d.teamHash
 	d.mu.RUnlock()
+
 	if localKey != "" && pubKey == localKey {
 		return
 	}
 
-	// 获取 IP 地址
+	if localTeamHash != "" && entryTeamHash != localTeamHash {
+		fmt.Printf("[mDNS] filtered: peer %s team mismatch (local=%s remote=%s)\n",
+			truncateKey(pubKey), localTeamHash[:8], truncateKey(entryTeamHash))
+		return
+	}
+
 	ipAddr := ""
 	if entry.AddrV4 != nil {
 		ipAddr = entry.AddrV4.String()
@@ -210,12 +276,20 @@ func (d *Discovery) handleMDNSEntry(entry *mdns.ServiceEntry) {
 		return
 	}
 
-	// 更新或插入对等节点
+	fmt.Printf("[mDNS] discovered: %s @ %s (pubkey=%s)\n", entry.Name, ipAddr, truncateKey(pubKey))
+
 	peer := PeerInfo{
 		PubKeyBase64: pubKey,
 		IPAddress:    ipAddr,
 	}
 	d.UpsertPeer(peer)
+}
+
+func truncateKey(key string) string {
+	if len(key) <= 16 {
+		return key
+	}
+	return key[:16]
 }
 
 func (d *Discovery) sweepExpiredPeers() {
@@ -245,4 +319,77 @@ func (d *Discovery) sweepExpiredPeers() {
 			IPAddress:    peer.IPAddress,
 		})
 	}
+}
+
+// SelectLANInterface finds the best network interface for mDNS multicast.
+// Prefers interfaces with private IPv4 addresses and FlagMulticast set.
+func SelectLANInterface() (*net.Interface, net.IP, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, nil, fmt.Errorf("list interfaces: %w", err)
+	}
+
+	var bestIface *net.Interface
+	var bestIP net.IP
+	bestScore := -1
+
+	for i := range ifaces {
+		iface := &ifaces[i]
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || !isPrivateLAN(ip4) {
+				continue
+			}
+
+			score := 0
+			if iface.Flags&net.FlagMulticast != 0 {
+				score += 10
+			}
+			if bestIface == nil || score > bestScore {
+				bestIface = iface
+				bestIP = ip4
+				bestScore = score
+			}
+		}
+	}
+
+	if bestIface == nil {
+		return nil, nil, fmt.Errorf("no suitable LAN interface found")
+	}
+	return bestIface, bestIP, nil
+}
+
+func isPrivateLAN(ip net.IP) bool {
+	if ip.IsLoopback() {
+		return false
+	}
+	if len(ip) != 4 {
+		return false
+	}
+	// 10.0.0.0/8
+	if ip[0] == 10 {
+		return true
+	}
+	// 172.16.0.0/12
+	if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
+		return true
+	}
+	// 192.168.0.0/16
+	if ip[0] == 192 && ip[1] == 168 {
+		return true
+	}
+	return false
 }

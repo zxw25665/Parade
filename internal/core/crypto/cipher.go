@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 
 	"golang.org/x/crypto/curve25519"
@@ -75,10 +76,15 @@ func (c *paradeCrypto) DecryptLocal(ciphertext[]byte) ([]byte, error) {
 // ---- 队伍网络加密实现 ----
 
 func (c *paradeCrypto) SetTeamKey(teamPassword string) {
-	// 因为局域网内所有节点只靠口令，没有中心服务器派发盐
-	// 所以直接用 SHA-256 提取队伍口令的哈希作为 32 字节 AES 密钥
 	hash := sha256.Sum256([]byte(teamPassword))
 	c.teamKey = hash[:]
+}
+
+func (c *paradeCrypto) TeamKeyHash() string {
+	if c.teamKey == nil {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(c.teamKey))
 }
 
 func (c *paradeCrypto) EncryptTeam(plaintext[]byte) ([]byte, error) {

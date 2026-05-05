@@ -12,6 +12,7 @@ import (
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
+	"parade/internal/network"
 )
 
 const IdentityFile = "./.parade_identity"
@@ -86,31 +87,73 @@ func (a *App) registerEventSubscribers() {
 	a.subscribe(eventbus.TopicMsgReceived, func(c context.Context, ev eventbus.Event) {
 		payload := ev.Payload.(eventbus.MsgReceivedPayload)
 
-		// 1. 落盘加密
+		// Type 99 = ephemeral test message, skip DB persistence
+		if payload.Type == 99 {
+			a.ui.Notify("ui_new_message", map[string]interface{}{
+				"id":        "test-" + payload.HLC,
+				"hlc":       payload.HLC,
+				"sender":    payload.SenderID,
+				"content":   "[握手测试] " + string(payload.Content),
+				"timestamp": ev.Timestamp,
+			})
+			return
+		}
+
 		encrypted, err := a.crypto.EncryptLocal(payload.Content)
 		if err != nil {
 			log.Printf("encrypt local failed: %v", err)
 			return
 		}
 		msg := &db.Message{
-			ID:        uuid.New().String(),
-			HLC:       payload.HLC,
-			SenderID:  payload.SenderID,
-			Content:   encrypted,
-			Type:      payload.Type,
-			CreatedAt: ev.Timestamp,
+			ID:         uuid.New().String(),
+			HLC:        payload.HLC,
+			SenderID:   payload.SenderID,
+			ReceiverID: db.ReceiverIDGroupChat,
+			Content:    encrypted,
+			Type:       payload.Type,
+			CreatedAt:  ev.Timestamp,
 		}
 		if err := a.database.InsertMessage(context.Background(), msg); err != nil {
 			log.Printf("insert message failed: %v", err)
 		}
 
-		// 2. 推送 UI
 		a.ui.Notify("ui_new_message", map[string]interface{}{
 			"id":        msg.ID,
 			"hlc":       msg.HLC,
 			"sender":    msg.SenderID,
 			"content":   string(payload.Content),
 			"timestamp": msg.CreatedAt,
+		})
+	})
+
+	a.subscribe(eventbus.TopicPrivateMsgReceived, func(c context.Context, ev eventbus.Event) {
+		payload := ev.Payload.(eventbus.MsgReceivedPayload)
+
+		encrypted, err := a.crypto.EncryptLocal(payload.Content)
+		if err != nil {
+			log.Printf("encrypt local (private) failed: %v", err)
+			return
+		}
+		msg := &db.Message{
+			ID:         uuid.New().String(),
+			HLC:        payload.HLC,
+			SenderID:   payload.SenderID,
+			ReceiverID: payload.ReceiverID,
+			Content:    encrypted,
+			Type:       payload.Type,
+			CreatedAt:  ev.Timestamp,
+		}
+		if err := a.database.InsertMessage(context.Background(), msg); err != nil {
+			log.Printf("insert private message failed: %v", err)
+		}
+
+		a.ui.Notify("ui_private_message", map[string]interface{}{
+			"id":         msg.ID,
+			"hlc":        msg.HLC,
+			"senderId":   msg.SenderID,
+			"receiverId": msg.ReceiverID,
+			"content":    string(payload.Content),
+			"timestamp":  msg.CreatedAt,
 		})
 	})
 
@@ -240,4 +283,31 @@ func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, err
 		})
 	}
 	return res, nil
+}
+
+// ConnectToPeer 执行对指定 IP 的三阶段连接测试。
+func (a *App) ConnectToPeer(ipAddress string) (map[string]interface{}, error) {
+	if a.netEng == nil {
+		return nil, errors.New("network engine not available")
+	}
+	result, err := a.netEng.ConnectToPeer(ipAddress)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"ip":         result.IP,
+		"pubkey":     result.PubKey,
+		"phase1":     mapPhaseResult(result.Phase1),
+		"phase2":     mapPhaseResult(result.Phase2),
+		"phase3Send": mapPhaseResult(result.Phase3Send),
+		"phase3Recv": mapPhaseResult(result.Phase3Recv),
+	}, nil
+}
+
+func mapPhaseResult(r network.PhaseResult) map[string]interface{} {
+	return map[string]interface{}{
+		"success": r.Success,
+		"label":   r.Label,
+		"error":   r.Error,
+	}
 }
