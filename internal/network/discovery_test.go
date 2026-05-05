@@ -6,13 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/mdns"
 	"parade/internal/core/eventbus"
 )
 
 func TestDiscoveryUpsertRemoveAndSnapshot(t *testing.T) {
 	bus := eventbus.New()
-	d := NewDiscovery(bus)
+	d := NewDiscovery(bus, NewServiceBrowser())
 
 	joinedCh := make(chan eventbus.PeerEventPayload, 1)
 	leftCh := make(chan eventbus.PeerEventPayload, 1)
@@ -69,7 +68,7 @@ func TestDiscoveryUpsertRemoveAndSnapshot(t *testing.T) {
 
 func TestDiscoverySweepExpiredPeers(t *testing.T) {
 	bus := eventbus.New()
-	d := NewDiscovery(bus)
+	d := NewDiscovery(bus, NewServiceBrowser())
 	d.ttl = 10 * time.Millisecond
 
 	leftCh := make(chan eventbus.PeerEventPayload, 1)
@@ -106,26 +105,26 @@ func TestDiscoverySweepExpiredPeers(t *testing.T) {
 	}
 }
 
-func TestHandleMDNSEntry_FiltersNoPubKeyAndWrongService(t *testing.T) {
+func TestHandleServiceEntry_FiltersNoPubKeyAndWrongService(t *testing.T) {
 	bus := eventbus.New()
-	d := NewDiscovery(bus)
+	d := NewDiscovery(bus, NewServiceBrowser())
 
-	entry := &mdns.ServiceEntry{
+	entry := &ServiceEntry{
 		Name:       "Chromecast._http._tcp.local.",
 		AddrV4:     net.ParseIP("192.168.1.100"),
 		InfoFields: []string{"id=abc123"},
 	}
 
-	d.handleMDNSEntry(entry)
+	d.handleServiceEntry(entry)
 
 	if peers := d.Snapshot(); len(peers) != 0 {
-		t.Fatalf("expected 0 peers after entry with no pubkey and wrong service, got %d", len(peers))
+		t.Fatalf("expected 0 peers after entry with no pubkey, got %d", len(peers))
 	}
 }
 
-func TestHandleMDNSEntry_AcceptsPubKeyTXTWithoutServiceName(t *testing.T) {
+func TestHandleServiceEntry_AcceptsPubKeyTXTWithoutServiceName(t *testing.T) {
 	bus := eventbus.New()
-	d := NewDiscovery(bus)
+	d := NewDiscovery(bus, NewServiceBrowser())
 
 	joinedCh := make(chan eventbus.PeerEventPayload, 1)
 	bus.Subscribe(eventbus.TopicPeerJoined, func(_ context.Context, ev eventbus.Event) {
@@ -135,13 +134,13 @@ func TestHandleMDNSEntry_AcceptsPubKeyTXTWithoutServiceName(t *testing.T) {
 		}
 	})
 
-	entry := &mdns.ServiceEntry{
+	entry := &ServiceEntry{
 		Name:       "SomeDevice._http._tcp.local.",
 		AddrV4:     net.ParseIP("192.168.1.200"),
 		InfoFields: []string{"pubkey=test-pubkey-12345"},
 	}
 
-	d.handleMDNSEntry(entry)
+	d.handleServiceEntry(entry)
 
 	select {
 	case got := <-joinedCh:
@@ -157,9 +156,9 @@ func TestHandleMDNSEntry_AcceptsPubKeyTXTWithoutServiceName(t *testing.T) {
 	}
 }
 
-func TestHandleMDNSEntry_AcceptsCorrectService(t *testing.T) {
+func TestHandleServiceEntry_AcceptsCorrectService(t *testing.T) {
 	bus := eventbus.New()
-	d := NewDiscovery(bus)
+	d := NewDiscovery(bus, NewServiceBrowser())
 
 	joinedCh := make(chan eventbus.PeerEventPayload, 1)
 	bus.Subscribe(eventbus.TopicPeerJoined, func(_ context.Context, ev eventbus.Event) {
@@ -169,13 +168,13 @@ func TestHandleMDNSEntry_AcceptsCorrectService(t *testing.T) {
 		}
 	})
 
-	entry := &mdns.ServiceEntry{
-		Name:      "Parade-abc123._parade._tcp.local.",
-		AddrV4:    net.ParseIP("192.168.1.10"),
+	entry := &ServiceEntry{
+		Name:       "Parade-abc123._parade._tcp.local.",
+		AddrV4:     net.ParseIP("192.168.1.10"),
 		InfoFields: []string{"pubkey=test-pubkey-12345"},
 	}
 
-	d.handleMDNSEntry(entry)
+	d.handleServiceEntry(entry)
 
 	select {
 	case got := <-joinedCh:
@@ -200,7 +199,7 @@ func TestHandleMDNSEntry_AcceptsCorrectService(t *testing.T) {
 
 func TestRefreshLastSeen_PreventsSweep(t *testing.T) {
 	bus := eventbus.New()
-	d := NewDiscovery(bus)
+	d := NewDiscovery(bus, NewServiceBrowser())
 	d.ttl = 10 * time.Millisecond
 
 	leftCh := make(chan eventbus.PeerEventPayload, 1)

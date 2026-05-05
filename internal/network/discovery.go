@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/mdns"
 	"parade/internal/core/eventbus"
 )
 
@@ -25,6 +24,8 @@ type Discovery struct {
 	ttl       time.Duration
 	sweepTick time.Duration
 
+	browser ServiceBrowser
+
 	mdnsDone chan struct{}
 
 	localPubKey string
@@ -34,13 +35,14 @@ type Discovery struct {
 	onPeerDiscovered func(PeerInfo)
 }
 
-func NewDiscovery(bus eventbus.EventBus) *Discovery {
+func NewDiscovery(bus eventbus.EventBus, browser ServiceBrowser) *Discovery {
 	return &Discovery{
 		bus:       bus,
 		peers:     make(map[string]PeerInfo),
 		lastSeen:  make(map[string]time.Time),
 		ttl:       60 * time.Second,
 		sweepTick: 5 * time.Second,
+		browser:   browser,
 	}
 }
 
@@ -165,7 +167,7 @@ func (d *Discovery) Run(ctx context.Context) {
 }
 
 func (d *Discovery) startMDNSQuery(ctx context.Context) {
-	queryTicker := time.NewTicker(5 * time.Second)
+	queryTicker := time.NewTicker(queryInterval)
 	defer queryTicker.Stop()
 
 	select {
@@ -187,48 +189,26 @@ func (d *Discovery) startMDNSQuery(ctx context.Context) {
 }
 
 func (d *Discovery) runMDNSQuery(ctx context.Context) {
-	entriesCh := make(chan *mdns.ServiceEntry, 32)
-
 	d.mu.RLock()
 	iface := d.iface
 	d.mu.RUnlock()
 
-	go func() {
-		params := &mdns.QueryParam{
-			Service:             "_parade._tcp",
-			Domain:              "local.",
-			Timeout:             5 * time.Second,
-			Entries:             entriesCh,
-			WantUnicastResponse: false,
-			Interface:           iface,
-		}
-		if err := mdns.Query(params); err != nil {
-			fmt.Printf("[mDNS] query failed: %v\n", err)
-		}
-		close(entriesCh)
-	}()
+	entries, err := d.browser.Browse(ctx, "_parade._tcp", "local.", iface)
+	if err != nil {
+		fmt.Printf("[mDNS] browse query failed: %v\n", err)
+		return
+	}
 
-	entryCount := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case entry, ok := <-entriesCh:
-			if !ok {
-				if entryCount == 0 {
-					fmt.Printf("[mDNS] query completed: no _parade._tcp entries found\n")
-				}
-				return
-			}
-			if entry != nil {
-				entryCount++
-				d.handleMDNSEntry(entry)
-			}
-		}
+	if len(entries) == 0 {
+		fmt.Printf("[mDNS] query completed: no _parade._tcp entries found\n")
+	}
+
+	for _, entry := range entries {
+		d.handleServiceEntry(entry)
 	}
 }
 
-func (d *Discovery) handleMDNSEntry(entry *mdns.ServiceEntry) {
+func (d *Discovery) handleServiceEntry(entry *ServiceEntry) {
 	if entry == nil || entry.Name == "" {
 		return
 	}
@@ -321,8 +301,6 @@ func (d *Discovery) sweepExpiredPeers() {
 	}
 }
 
-// SelectLANInterface finds the best network interface for mDNS multicast.
-// Prefers interfaces with private IPv4 addresses and FlagMulticast set.
 func SelectLANInterface() (*net.Interface, net.IP, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -379,15 +357,12 @@ func isPrivateLAN(ip net.IP) bool {
 	if len(ip) != 4 {
 		return false
 	}
-	// 10.0.0.0/8
 	if ip[0] == 10 {
 		return true
 	}
-	// 172.16.0.0/12
 	if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
 		return true
 	}
-	// 192.168.0.0/16
 	if ip[0] == 192 && ip[1] == 168 {
 		return true
 	}

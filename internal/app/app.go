@@ -55,6 +55,11 @@ func (a *App) Startup(ctx context.Context) {
 	a.registerEventSubscribers()
 }
 
+// GetContext returns the stored Wails context, used for single-instance window activation.
+func (a *App) GetContext() context.Context {
+	return a.ctx
+}
+
 // Shutdown 清理 EventBus 订阅，防止内存泄漏
 func (a *App) Shutdown() {
 	for _, s := range a.subs {
