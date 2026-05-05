@@ -11,6 +11,7 @@ type NetworkEngine interface {
 	Peers() []map[string]string                               // 返回已发现节点的公钥和IP
 	StartDownload(targetPubKey, virtualPath, localSavePath string) error
 	ConnectToPeer(ipAddress string) (*network.PeerConnectResult, error) // 三阶段直连测试
+	OnForeground() // 前台恢复时刷新发现和连接状态
 }
 
 // FileEngine 定义了文件层的行为契约

@@ -25,7 +25,8 @@ type Discovery struct {
 	ttl       time.Duration
 	sweepTick time.Duration
 
-	mdnsDone chan struct{}
+	mdnsDone    chan struct{}
+	triggerQuery chan struct{}
 
 	localPubKey string
 	teamHash    string
@@ -36,11 +37,12 @@ type Discovery struct {
 
 func NewDiscovery(bus eventbus.EventBus) *Discovery {
 	return &Discovery{
-		bus:       bus,
-		peers:     make(map[string]PeerInfo),
-		lastSeen:  make(map[string]time.Time),
-		ttl:       60 * time.Second,
-		sweepTick: 5 * time.Second,
+		bus:          bus,
+		peers:        make(map[string]PeerInfo),
+		lastSeen:     make(map[string]time.Time),
+		ttl:          300 * time.Second,
+		sweepTick:    5 * time.Second,
+		triggerQuery: make(chan struct{}, 1),
 	}
 }
 
@@ -134,6 +136,13 @@ func (d *Discovery) SetOnPeerDiscovered(fn func(PeerInfo)) {
 	d.onPeerDiscovered = fn
 }
 
+func (d *Discovery) TriggerQuery() {
+	select {
+	case d.triggerQuery <- struct{}{}:
+	default:
+	}
+}
+
 func (d *Discovery) RefreshLastSeen(pubKey string) {
 	if pubKey == "" {
 		return
@@ -180,6 +189,8 @@ func (d *Discovery) startMDNSQuery(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-d.triggerQuery:
+			d.runMDNSQuery(ctx)
 		case <-queryTicker.C:
 			d.runMDNSQuery(ctx)
 		}
