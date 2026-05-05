@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +90,22 @@ func (e *Engine) PrepareDownload(ctx context.Context, taskID, filePath, peerID s
 		return log.TotalSize, ErrDownloadCompleted
 	}
 
+	// Use bitmap-based resume when the bitmap file exists.
+	// This correctly handles out-of-order chunk reception, where
+	// log.Transferred may point to a high offset even though
+	// earlier chunks are still missing.
+	bitmapPath := filePath + ".parade_tmp.bitmap"
+	if tracker, err := LoadChunkTracker(bitmapPath, totalSize); err == nil {
+		missing := tracker.MissingOffsets()
+		if len(missing) > 0 {
+			return missing[0], nil
+		}
+		if !tracker.IsComplete() {
+			return tracker.BytesReceived(), nil
+		}
+		return totalSize, nil
+	}
+
 	if log.Transferred < 0 {
 		return 0, nil
 	}
@@ -159,7 +177,9 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 	}
 
 	// ---- DB 进度持久化 ----
-	nextOffset := offset + int64(len(data))
+	// Use tracker.BytesReceived() for monotonic progress reporting.
+	// nextOffset alone can regress when chunks arrive out of order.
+	progressReported := tracker.BytesReceived()
 	status := statusTransferring
 	if complete {
 		status = statusCompleted
@@ -171,7 +191,7 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 		PeerID:      peerID,
 		Direction:   directionDownload,
 		TotalSize:   totalSize,
-		Transferred: nextOffset,
+		Transferred: progressReported,
 		Status:      status,
 		UpdatedAt:   time.Now(),
 	}
@@ -184,9 +204,15 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 	if complete {
 		_ = os.Remove(bitmapPath)
 		e.cleanupTracker(taskID)
-		_ = os.Remove(targetPath)
 		if err := os.Rename(tmpPath, targetPath); err != nil {
-			return fmt.Errorf("finalize file failed: %w", err)
+			if os.IsExist(err) || os.IsPermission(err) {
+				_ = os.Remove(targetPath)
+				if err2 := os.Rename(tmpPath, targetPath); err2 != nil {
+					return fmt.Errorf("finalize file failed: %w (retry also failed: %w)", err, err2)
+				}
+			} else {
+				return fmt.Errorf("finalize file failed: %w", err)
+			}
 		}
 		e.publishCompleted(taskID)
 	}
@@ -289,13 +315,14 @@ func (e *Engine) getOrCreateTracker(taskID, bitmapPath string, totalSize int64) 
 	return tracker, nil
 }
 
-// cleanupTracker 移除完成任务的 ChunkTracker 缓存，防止内存泄漏。
+// cleanupTracker 移除完成任务的 ChunkTracker 缓存和 per-task 互斥锁，防止内存泄漏。
 func (e *Engine) cleanupTracker(taskID string) {
 	runtime := e.getRuntime()
 	if runtime == nil {
 		return
 	}
 	runtime.chunkTrackers.Delete(taskID)
+	runtime.taskLocks.Delete(taskID)
 }
 
 // GetMissingChunks 返回尚未接收的偏移量列表，供网络层 resume 时使用。
@@ -396,4 +423,31 @@ func (e *Engine) persistHashToFileLog(ctx context.Context, absPath, hash string,
 		UpdatedAt:   time.Now(),
 	}
 	return database.UpsertFileLog(ctx, log)
+}
+
+// CleanupStaleTempFiles scans shared directory roots for orphaned
+// .parade_tmp and .parade_tmp.bitmap files. A temp file is considered
+// stale if no active download task exists for it. Completed downloads
+// should have already cleaned up their temp files; any remaining
+// ones are from interrupted transfers.
+func (e *Engine) CleanupStaleTempFiles() {
+	e.mu.RLock()
+	roots := make([]string, 0, len(e.sharedRoots))
+	for root := range e.sharedRoots {
+		roots = append(roots, root)
+	}
+	e.mu.RUnlock()
+
+	for _, root := range roots {
+		filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			name := d.Name()
+			if strings.HasSuffix(name, ".parade_tmp") || strings.HasSuffix(name, ".parade_tmp.bitmap") {
+				os.Remove(path)
+			}
+			return nil
+		})
+	}
 }
