@@ -15,9 +15,10 @@
 </template>
 
 <script setup>
-import { ref, computed, provide } from 'vue'
+import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
 import { useEvents } from './composables/useEvents.js'
 import { useStore } from './composables/useStore.js'
+import { OnForeground } from './lib/wailsjs/go/app/App.js'
 import IdentityPanel from './components/IdentityPanel.vue'
 import TeamPanel from './components/TeamPanel.vue'
 import PeerList from './components/PeerList.vue'
@@ -57,6 +58,20 @@ const currentComponent = computed(() => {
     history: HistoryViewer
   }
   return map[currentTab.value]
+})
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    OnForeground().catch(() => {})
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 
