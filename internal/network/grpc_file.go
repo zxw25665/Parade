@@ -98,6 +98,23 @@ func NewFileService(fileEngine *file.Engine, localPeer string) *FileService {
 	}
 }
 
+func (s *FileService) GetFileMeta(ctx context.Context, req *pb.FileMetaRequest) (*pb.FileMetaResponse, error) {
+	if req.GetFilePath() == "" {
+		return nil, errors.New("file_path is required")
+	}
+	info, err := os.Stat(req.GetFilePath())
+	if err != nil {
+		return nil, fmt.Errorf("stat file failed: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("path is a directory: %s", req.GetFilePath())
+	}
+	return &pb.FileMetaResponse{
+		FilePath:  req.GetFilePath(),
+		TotalSize: info.Size(),
+	}, nil
+}
+
 // 服务端：被请求后不断读本地chunk并下发
 func (s *FileService) DownloadFile(req *pb.FileRequest, stream pb.FileTransferService_DownloadFileServer) error {
 	if req.GetTaskId() == "" || req.GetFilePath() == "" {

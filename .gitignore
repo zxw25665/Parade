@@ -46,13 +46,17 @@ go.work
 .GOPATH
 .cache/
 
-# --- 前端依赖与日志 (Frontend / Node) ---
+# --- 前端依赖、日志与生成代码 (Frontend / Node / Generated) ---
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .eslintcache
 .stylelintcache
+# Wails 自动生成的前端绑定代码（每次 wails build/dev 重新生成）
+frontend/src/lib/wailsjs/
+# 前端包校验和文件（自动生成）
+frontend/package.json.md5
 
 # --- 编辑器与系统文件 (IDE & OS) ---
 .vscode/*
@@ -73,3 +77,5 @@ test_*-shm
 
 # CLAUDE.md is AI assistant context, not project documentation
 CLAUDE.md
+CLAUDE.md
+AGENTS.md

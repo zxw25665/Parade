@@ -2,10 +2,15 @@ package network
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
+	"parade/internal/file"
+	pb "parade/internal/network/pb"
 )
 
 func TestFilePlaneRequestAndLastRequest(t *testing.T) {
@@ -79,5 +84,45 @@ func TestFilePlaneRequestValidation(t *testing.T) {
 	}
 	if err := plane.RequestFileChunk("peer", "task", -1); err == nil {
 		t.Fatal("expected error for negative offset")
+	}
+}
+
+func TestGetFileMeta(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tmpFile := filepath.Join(tmpDir, "testfile.bin")
+	content := make([]byte, 12345)
+	for i := range content {
+		content[i] = byte(i % 256)
+	}
+	if err := os.WriteFile(tmpFile, content, 0o644); err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	database, err := db.NewSQLiteDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer database.Close()
+
+	bus := eventbus.New()
+	fileEng := file.NewEngine().WithDatabase(database).WithEventBus(bus)
+
+	svc := NewFileService(fileEng, "local-peer-1")
+
+	ctx := context.Background()
+	req := &pb.FileMetaRequest{
+		FilePath: tmpFile,
+	}
+	resp, err := svc.GetFileMeta(ctx, req)
+	if err != nil {
+		t.Fatalf("GetFileMeta failed: %v", err)
+	}
+	if resp.TotalSize != 12345 {
+		t.Fatalf("expected TotalSize 12345, got %d", resp.TotalSize)
+	}
+	if resp.FilePath != tmpFile {
+		t.Fatalf("expected FilePath %s, got %s", tmpFile, resp.FilePath)
 	}
 }

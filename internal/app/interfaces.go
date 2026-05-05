@@ -1,5 +1,7 @@
 ﻿package app
 
+import "parade/internal/network"
+
 // NetworkEngine 定义了网络层的行为契约
 type NetworkEngine interface {
 	Start(port int) error
@@ -8,6 +10,7 @@ type NetworkEngine interface {
 	UnicastPrivate(targetPubKey string, payload []byte) error // 定点私聊
 	Peers() []map[string]string                               // 返回已发现节点的公钥和IP
 	StartDownload(targetPubKey, virtualPath, localSavePath string) error
+	ConnectToPeer(ipAddress string) (*network.PeerConnectResult, error) // 三阶段直连测试
 }
 
 // FileEngine 定义了文件层的行为契约
