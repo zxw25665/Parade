@@ -11,6 +11,7 @@ import (
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
+	"parade/internal/network"
 )
 
 type MockNetwork struct {
@@ -26,6 +27,14 @@ func (m *MockNetwork) BroadcastTeam(b []byte) error {
 func (m *MockNetwork) UnicastPrivate(t string, b []byte) error { return nil }
 func (m *MockNetwork) Peers() []map[string]string { return nil }
 func (m *MockNetwork) StartDownload(t, v, l string) error { return nil }
+func (m *MockNetwork) ConnectToPeer(ip string) (*network.PeerConnectResult, error) {
+	return &network.PeerConnectResult{
+		IP:     ip,
+		PubKey: "mock_pubkey",
+		Phase1: network.PhaseResult{Success: true, Label: "正常"},
+		Phase2: network.PhaseResult{Success: true, Label: "队伍相同"},
+	}, nil
+}
 
 type MockFile struct{}
 

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Parade (游行)</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; }
+    #app { width: 100vw; height: 100vh; display: flex; }
+    input, button, select, textarea {
+      background: #16213e; color: #e0e0e0; border: 1px solid #0f3460;
+      padding: 6px 10px; border-radius: 4px; font-size: 13px;
+    }
+    button { cursor: pointer; background: #0f3460; border-color: #0f3460; }
+    button:hover { background: #1a4a7a; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    input:focus, select:focus { outline: none; border-color: #e94560; }
+    .error { color: #e94560; font-size: 12px; margin-top: 4px; }
+    .success { color: #4ecca3; font-size: 12px; margin-top: 4px; }
+    .panel { padding: 16px; }
+    .panel h2 { font-size: 16px; margin-bottom: 12px; color: #e94560; border-bottom: 1px solid #0f3460; padding-bottom: 6px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #0f3460; }
+    .badge-green { background: #1b5e20; color: #4ecca3; }
+    .badge-red { background: #5e1b1b; color: #e94560; }
+    .list { max-height: 300px; overflow-y: auto; border: 1px solid #0f3460; border-radius: 4px; padding: 8px; }
+    .list-item { padding: 4px 8px; border-bottom: 1px solid #16213e; font-size: 13px; }
+    .list-item:last-child { border-bottom: none; }
+    .progress-bar { height: 8px; background: #16213e; border-radius: 4px; overflow: hidden; margin: 4px 0; }
+    .progress-fill { height: 100%; background: #e94560; transition: width 0.3s; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="/wails/runtime.js"></script>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

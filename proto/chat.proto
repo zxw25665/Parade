@@ -5,9 +5,11 @@ package parade.chat.v1;
 option go_package = "parade/internal/network/pb/chatpb;chatpb";
 
 message Envelope {
-  string sender_id = 1;
-  bytes payload = 2;
-  string signature = 3;
+  string sender_id   = 1;
+  bytes  payload     = 2;
+  string signature   = 3;
+  int32  type        = 4;  // 0=team, 1=private, 99=test
+  string receiver_id = 5;  // empty for team, target pubkey for private
 }
 
 message MetadataSyncRequest {
@@ -21,7 +23,19 @@ message MetadataSyncResponse {
   bytes payload = 3;
 }
 
+message HandshakeRequest {
+  string sender_id = 1;
+  bytes team_challenge = 2;
+}
+
+message HandshakeResponse {
+  string remote_pubkey = 1;
+  bool team_match = 2;
+  bytes team_reply = 3;
+}
+
 service ChatService {
   rpc StreamChat(stream Envelope) returns (stream Envelope);
   rpc SyncMetadata(stream MetadataSyncRequest) returns (stream MetadataSyncResponse);
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
 }
