@@ -17,8 +17,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
-	"github.com/hashicorp/mdns"
-	"parade/internal/file"
 	"parade/internal/core/crypto"
 	"parade/internal/core/eventbus"
 	chatpb "parade/internal/network/pb/chatpb"
@@ -35,7 +33,7 @@ type Engine struct {
 
 	discovery *Discovery
 	filePlane *FilePlane
-	fileEngine *file.Engine
+	fileEngine FileTransferEngine
 
 	// 控制面 gRPC 服务器字段
 	controlListener  net.Listener
@@ -49,8 +47,8 @@ type Engine struct {
 	fileServiceImpl  *FileService
 	dataPort         int
 
-	// mDNS 服务器字段
-	mdnsServer *mdns.Server
+	// mDNS 服务字段
+	mdnsHandle ServiceHandle
 
 	// gRPC 客户端连接池（控制面）
 	clientConns map[string]*grpc.ClientConn // 按 pubKey 索引
@@ -79,7 +77,7 @@ func NewEngine(bus eventbus.EventBus, cry crypto.Engine) *Engine {
 	eng := &Engine{
 		bus:             bus,
 		crypto:          cry,
-		discovery:       NewDiscovery(bus),
+		discovery:       NewDiscovery(bus, NewServiceBrowser()),
 		filePlane:       NewFilePlane(bus),
 		controlPort:     4327,
 		dataPort:        4328,
@@ -153,7 +151,7 @@ func (e *Engine) Start(port int) error {
 		}()
 	}
 
-	// mDNS: select LAN interface and derive team hash
+	// mDNS: register _parade._tcp service via ServiceBrowser
 	iface, lanIP, err := SelectLANInterface()
 	if err != nil {
 		fmt.Printf("[mDNS] WARNING: %v, discovery may not work\n", err)
@@ -168,28 +166,23 @@ func (e *Engine) Start(port int) error {
 		fmt.Sprintf("team=%s", teamHash),
 	}
 	lanIPs := []net.IP{lanIP}
-	service, err := mdns.NewMDNSService(
+
+	browser := NewServiceBrowser()
+	e.discovery = NewDiscovery(e.bus, browser)
+
+	handle, err := browser.Register(
 		"Parade-"+e.crypto.GetPublicKeyBase64()[:8],
 		"_parade._tcp",
 		"local.",
-		"",
 		e.controlPort,
 		lanIPs,
 		info,
+		iface,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create mDNS service: %w", err)
+		return fmt.Errorf("failed to register mDNS service: %w", err)
 	}
-
-	mdnsCfg := &mdns.Config{Zone: service}
-	if iface != nil {
-		mdnsCfg.Iface = iface
-	}
-	server, err := mdns.NewServer(mdnsCfg)
-	if err != nil {
-		return fmt.Errorf("failed to start mDNS server: %w (Avahi may be using port 5353)", err)
-	}
-	e.mdnsServer = server
+	e.mdnsHandle = handle
 	fmt.Printf("[mDNS] started, advertising %s on %v (team=%s)\n",
 		"_parade._tcp", lanIPs, truncateKey(teamHash))
 
@@ -229,17 +222,17 @@ func (e *Engine) Stop() error {
 	cancel := e.discoveryCancel
 	server := e.controlServer
 	dataSrv := e.dataServer
-	mdnsServer := e.mdnsServer
+	mdnsHandle := e.mdnsHandle
 	e.started = false
 	e.discoveryCtx = nil
 	e.discoveryCancel = nil
 	e.controlServer = nil
 	e.dataServer = nil
-	e.mdnsServer = nil
+	e.mdnsHandle = nil
 	e.mu.Unlock()
 
-	if mdnsServer != nil {
-		mdnsServer.Shutdown()
+	if mdnsHandle != nil {
+		mdnsHandle.Shutdown()
 	}
 
 	e.sessionMu.Lock()
@@ -447,7 +440,7 @@ func (e *Engine) FilePlane() *FilePlane {
 	return e.filePlane
 }
 
-func (e *Engine) AttachFileEngine(fe *file.Engine) {
+func (e *Engine) AttachFileEngine(fe FileTransferEngine) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.fileEngine = fe
