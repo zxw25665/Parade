@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -87,11 +86,11 @@ func (f *FilePlane) SweepOlderThan(_ time.Duration) {
 
 type FileService struct {
 	pb.UnimplementedFileTransferServiceServer
-	fileEngine *file.Engine
+	fileEngine FileTransferEngine
 	localPeer  string
 }
 
-func NewFileService(fileEngine *file.Engine, localPeer string) *FileService {
+func NewFileService(fileEngine FileTransferEngine, localPeer string) *FileService {
 	return &FileService{
 		fileEngine: fileEngine,
 		localPeer:  localPeer,
@@ -102,12 +101,9 @@ func (s *FileService) GetFileMeta(ctx context.Context, req *pb.FileMetaRequest) 
 	if req.GetFilePath() == "" {
 		return nil, errors.New("file_path is required")
 	}
-	info, err := os.Stat(req.GetFilePath())
+	info, err := s.fileEngine.GetFileMeta(req.GetFilePath())
 	if err != nil {
-		return nil, fmt.Errorf("stat file failed: %w", err)
-	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("path is a directory: %s", req.GetFilePath())
+		return nil, err
 	}
 	return &pb.FileMetaResponse{
 		FilePath:  req.GetFilePath(),
@@ -124,12 +120,9 @@ func (s *FileService) DownloadFile(req *pb.FileRequest, stream pb.FileTransferSe
 		return errors.New("offset must be >= 0")
 	}
 
-	info, err := os.Stat(req.GetFilePath())
+	info, err := s.fileEngine.GetFileMeta(req.GetFilePath())
 	if err != nil {
-		return fmt.Errorf("stat file failed: %w", err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("path is a directory: %s", req.GetFilePath())
+		return err
 	}
 	totalSize := info.Size()
 
@@ -168,7 +161,7 @@ func (s *FileService) DownloadFile(req *pb.FileRequest, stream pb.FileTransferSe
 }
 
 type DownloadDeps struct {
-	FileEngine *file.Engine
+	FileEngine FileTransferEngine
 	Client     pb.FileTransferServiceClient
 	LocalPeer  string
 }

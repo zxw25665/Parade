@@ -67,3 +67,21 @@ func (e *Engine) GetChunk(path string, offset int64) ([]byte, error) {
 	copy(out, buf[:n])
 	return out, nil
 }
+
+func (e *Engine) GetFileMeta(path string) (os.FileInfo, error) {
+	if path == "" {
+		return nil, errors.New("path is empty")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve absolute path failed: %w", err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat file failed: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("path is a directory: %s", absPath)
+	}
+	return info, nil
+}

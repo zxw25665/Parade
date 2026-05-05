@@ -77,6 +77,5 @@ test_*-shm
 
 # CLAUDE.md is AI assistant context, not project documentation
 CLAUDE.md
-CLAUDE.md
 AGENTS.md
 network-debug-instruction.md

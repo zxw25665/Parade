@@ -160,6 +160,31 @@ func (ct *ChunkTracker) MissingOffsets() []int64 {
 	return offsets
 }
 
+// MissingRanges returns byte-level [start, end) ranges for slots that
+// have not been fully received yet. For partially-received slots, the
+// range covers only the unreceived portion based on slotMaxEnd.
+func (ct *ChunkTracker) MissingRanges() [][2]int64 {
+	ranges := make([][2]int64, 0, ct.totalSlots-ct.received)
+	for idx := 0; idx < ct.totalSlots; idx++ {
+		wordIdx := idx / 64
+		bitIdx := idx % 64
+		slotStart := int64(idx) * DefaultChunkSize
+		slotEnd := slotStart + DefaultChunkSize
+		if slotEnd > ct.totalSize {
+			slotEnd = ct.totalSize
+		}
+
+		if ct.bitmap[wordIdx]&(1<<bitIdx) == 0 {
+			ranges = append(ranges, [2]int64{slotStart, slotEnd})
+		} else if ct.slotMaxEnd[idx] < slotEnd {
+			if ct.slotMaxEnd[idx] > slotStart {
+				ranges = append(ranges, [2]int64{ct.slotMaxEnd[idx], slotEnd})
+			}
+		}
+	}
+	return ranges
+}
+
 // BytesReceived 返回已覆盖的字节数（用于进度上报，单调递增）。
 func (ct *ChunkTracker) BytesReceived() int64 {
 	if ct.totalUnique > ct.totalSize {
