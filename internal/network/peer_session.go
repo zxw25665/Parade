@@ -16,9 +16,8 @@ import (
 const (
 	healthCheckInterval = 5 * time.Second
 	initialBackoff      = 1 * time.Second
-	maxBackoff          = 30 * time.Second
+	maxBackoff          = 60 * time.Second
 	backoffMultiplier   = 1.5
-	maxReconnectAttempts = 10
 )
 
 // PeerSession 管理到单个对等节点的连接生命周期，包括健康监测和自动重连。
@@ -78,23 +77,13 @@ func (ps *PeerSession) healthLoop() {
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 
-	consecutiveFailures := 0
-
 	for {
 		select {
 		case <-ps.ctx.Done():
 			return
 		case <-ticker.C:
 			if ps.checkAndReconnect() {
-				consecutiveFailures = 0
-			} else {
-				consecutiveFailures++
-				if consecutiveFailures >= maxReconnectAttempts {
-					fmt.Printf("PeerSession: peer %s unreachable after %d attempts, removing\n",
-						ps.pubKey[:16], maxReconnectAttempts)
-					ps.engine.removePeerConnection(ps.pubKey)
-					return
-				}
+				ps.engine.discovery.RefreshLastSeen(ps.pubKey)
 			}
 		}
 	}
@@ -128,8 +117,17 @@ func (ps *PeerSession) reconnect() bool {
 	defer ps.reconnecting.Store(false)
 
 	backoff := initialBackoff
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
+	for {
+		select {
+		case <-ps.ctx.Done():
+			return false
+		default:
+		}
+
+		newConn, err := ps.dialControl()
+		if err != nil {
+			fmt.Printf("[PeerSession] reconnect to %s failed: %v, retrying in %v\n",
+				truncateKey(ps.pubKey), err, backoff)
 			select {
 			case <-ps.ctx.Done():
 				return false
@@ -139,12 +137,6 @@ func (ps *PeerSession) reconnect() bool {
 					backoff = maxBackoff
 				}
 			}
-		}
-
-		newConn, err := ps.dialControl()
-		if err != nil {
-			fmt.Printf("PeerSession: reconnect dial %s failed (attempt %d): %v\n",
-				ps.pubKey[:16], attempt+1, err)
 			continue
 		}
 
@@ -161,16 +153,21 @@ func (ps *PeerSession) reconnect() bool {
 			oldConn.Close()
 		}
 
+		ps.engine.dataConnMu.Lock()
+		if oldDataConn, exists := ps.engine.dataClientConns[ps.pubKey]; exists {
+			oldDataConn.Close()
+			delete(ps.engine.dataClientConns, ps.pubKey)
+		}
+		ps.engine.dataConnMu.Unlock()
+
 		ps.engine.discovery.UpsertPeer(PeerInfo{
 			PubKeyBase64: ps.pubKey,
 			IPAddress:    ps.ipAddr,
 		})
 
-		fmt.Printf("PeerSession: reconnected to %s\n", ps.pubKey[:16])
+		fmt.Printf("[PeerSession] reconnected to %s\n", truncateKey(ps.pubKey))
 		return true
 	}
-
-	return false
 }
 
 func (ps *PeerSession) dialControl() (*grpc.ClientConn, error) {

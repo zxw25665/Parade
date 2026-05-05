@@ -309,6 +309,12 @@ func (a *App) ConnectToPeer(ipAddress string) (map[string]interface{}, error) {
 	}, nil
 }
 
+func (a *App) OnForeground() {
+	if a.netEng != nil {
+		a.netEng.OnForeground()
+	}
+}
+
 func mapPhaseResult(r network.PhaseResult) map[string]interface{} {
 	return map[string]interface{}{
 		"success": r.Success,

@@ -35,6 +35,7 @@ func (n *IntegrationMockNetwork) ConnectToPeer(ip string) (*network.PeerConnectR
 		Phase1: network.PhaseResult{Success: true, Label: "正常"},
 	}, nil
 }
+func (n *IntegrationMockNetwork) OnForeground() {}
 
 type IntegrationMockFile struct{}
 

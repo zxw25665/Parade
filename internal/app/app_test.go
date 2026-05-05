@@ -35,6 +35,7 @@ func (m *MockNetwork) ConnectToPeer(ip string) (*network.PeerConnectResult, erro
 		Phase2: network.PhaseResult{Success: true, Label: "队伍相同"},
 	}, nil
 }
+func (m *MockNetwork) OnForeground() {}
 
 type MockFile struct{}
 
