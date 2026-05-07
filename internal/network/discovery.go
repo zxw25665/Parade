@@ -18,6 +18,7 @@ type PeerInfo struct {
 
 type Discovery struct {
 	bus       eventbus.EventBus
+	browser   ServiceBrowser
 	mu        sync.RWMutex
 	peers     map[string]PeerInfo
 	lastSeen  map[string]time.Time
@@ -37,6 +38,7 @@ type Discovery struct {
 func NewDiscovery(bus eventbus.EventBus, browser ServiceBrowser) *Discovery {
 	return &Discovery{
 		bus:          bus,
+		browser:      browser,
 		peers:        make(map[string]PeerInfo),
 		lastSeen:     make(map[string]time.Time),
 		ttl:          300 * time.Second,
