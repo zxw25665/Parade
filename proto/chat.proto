@@ -10,6 +10,8 @@ message Envelope {
   string signature   = 3;
   int32  type        = 4;  // 0=team, 1=private, 99=test
   string receiver_id = 5;  // empty for team, target pubkey for private
+  string team_id      = 6;  // team scope identifier, empty for default team
+  string channel_id   = 7;  // empty for team-wide, channel ID for channel messages
 }
 
 message MetadataSyncRequest {

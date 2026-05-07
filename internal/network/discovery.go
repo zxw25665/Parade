@@ -29,8 +29,9 @@ type Discovery struct {
 	triggerQuery chan struct{}
 
 	localPubKey string
-	teamHash    string
-	iface       *net.Interface
+	teamHashes map[string]bool
+	peerTeams  map[string]map[string]bool
+	iface      *net.Interface
 
 	onPeerDiscovered func(PeerInfo)
 }
@@ -43,6 +44,8 @@ func NewDiscovery(bus eventbus.EventBus, browser ServiceBrowser) *Discovery {
 		lastSeen:     make(map[string]time.Time),
 		ttl:          300 * time.Second,
 		sweepTick:    5 * time.Second,
+		teamHashes:   make(map[string]bool),
+		peerTeams:    make(map[string]map[string]bool),
 		triggerQuery: make(chan struct{}, 1),
 	}
 }
@@ -83,6 +86,7 @@ func (d *Discovery) RemovePeer(pubKey string) {
 	if ok {
 		delete(d.peers, pubKey)
 		delete(d.lastSeen, pubKey)
+		delete(d.peerTeams, pubKey)
 	}
 	d.mu.Unlock()
 
@@ -119,10 +123,37 @@ func (d *Discovery) SetLocalPubKey(pubKey string) {
 	d.localPubKey = pubKey
 }
 
-func (d *Discovery) SetTeamHash(hash string) {
+func (d *Discovery) SetTeamHashes(hashes []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.teamHash = hash
+	d.teamHashes = make(map[string]bool)
+	for _, h := range hashes {
+		if h != "" {
+			d.teamHashes[h] = true
+		}
+	}
+}
+
+func (d *Discovery) SetTeamHash(hash string) {
+	if hash == "" {
+		d.SetTeamHashes(nil)
+	} else {
+		d.SetTeamHashes([]string{hash})
+	}
+}
+
+func (d *Discovery) GetPeersForTeam(teamHash string) []PeerInfo {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var out []PeerInfo
+	for pubKey, teams := range d.peerTeams {
+		if teams[teamHash] {
+			if peer, ok := d.peers[pubKey]; ok {
+				out = append(out, peer)
+			}
+		}
+	}
+	return out
 }
 
 func (d *Discovery) SetIface(iface *net.Interface) {
@@ -226,13 +257,20 @@ func (d *Discovery) handleServiceEntry(entry *ServiceEntry) {
 	fmt.Printf("[mDNS] entry: Name=%q AddrV4=%v Port=%d TXT=%v\n",
 		entry.Name, entry.AddrV4, entry.Port, entry.InfoFields)
 
-	var pubKey, entryTeamHash string
+	var pubKey string
+	var entryTeamHashes []string
 	for _, txt := range entry.InfoFields {
 		if strings.HasPrefix(txt, "pubkey=") {
 			pubKey = txt[7:]
 		}
 		if strings.HasPrefix(txt, "team=") {
-			entryTeamHash = txt[5:]
+			teamVal := txt[5:]
+			for _, h := range strings.Split(teamVal, ",") {
+				h = strings.TrimSpace(h)
+				if h != "" {
+					entryTeamHashes = append(entryTeamHashes, h)
+				}
+			}
 		}
 	}
 
@@ -242,17 +280,26 @@ func (d *Discovery) handleServiceEntry(entry *ServiceEntry) {
 
 	d.mu.RLock()
 	localKey := d.localPubKey
-	localTeamHash := d.teamHash
+	localHashes := d.teamHashes
 	d.mu.RUnlock()
 
 	if localKey != "" && pubKey == localKey {
 		return
 	}
 
-	if localTeamHash != "" && entryTeamHash != localTeamHash {
-		fmt.Printf("[mDNS] filtered: peer %s team mismatch (local=%s remote=%s)\n",
-			truncateKey(pubKey), localTeamHash[:8], truncateKey(entryTeamHash))
-		return
+	if len(localHashes) > 0 && len(entryTeamHashes) > 0 {
+		matched := false
+		for _, eh := range entryTeamHashes {
+			if localHashes[eh] {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			fmt.Printf("[mDNS] filtered: peer %s has no common team (local hashes=%v remote hashes=%v)\n",
+				truncateKey(pubKey), localHashes, entryTeamHashes)
+			return
+		}
 	}
 
 	ipAddr := ""
@@ -273,6 +320,15 @@ func (d *Discovery) handleServiceEntry(entry *ServiceEntry) {
 		IPAddress:    ipAddr,
 	}
 	d.UpsertPeer(peer)
+
+	d.mu.Lock()
+	if d.peerTeams[pubKey] == nil {
+		d.peerTeams[pubKey] = make(map[string]bool)
+	}
+	for _, h := range entryTeamHashes {
+		d.peerTeams[pubKey][h] = true
+	}
+	d.mu.Unlock()
 }
 
 func truncateKey(key string) string {
@@ -299,6 +355,7 @@ func (d *Discovery) sweepExpiredPeers() {
 		}
 		delete(d.peers, pubKey)
 		delete(d.lastSeen, pubKey)
+		delete(d.peerTeams, pubKey)
 		expired = append(expired, peer)
 	}
 	d.mu.Unlock()

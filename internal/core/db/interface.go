@@ -17,12 +17,49 @@ type Database interface {
 	GetMessagesSinceHLC(ctx context.Context, hlc string, limit int) ([]*Message, error)
 	// 获取最新的历史消息（UI 面板展示用）
 	GetRecentMessages(ctx context.Context, limit int, offset int) ([]*Message, error)
+	// 获取指定团队的最新历史消息
+	GetRecentMessagesByTeam(ctx context.Context, teamID string, limit int, offset int) ([]*Message, error)
+	// 获取指定频道的最新历史消息
+	GetRecentMessagesByChannel(ctx context.Context, channelID string, limit int, offset int) ([]*Message, error)
+	// 获取指定团队中自某个 HLC 时钟之后的消息（增量同步）
+	GetMessagesSinceHLCByTeam(ctx context.Context, teamID string, hlc string, limit int) ([]*Message, error)
 
 	// ---- 文件传输状态模块 ----
 	// 更新或插入文件传输进度（断点续传核心）
 	UpsertFileLog(ctx context.Context, log *FileLog) error
 	// 获取指定文件的传输记录
 	GetFileLog(ctx context.Context, taskID string) (*FileLog, error)
+
+	// ---- 团队模块 ----
+	InsertTeam(ctx context.Context, team *Team) error
+	GetTeam(ctx context.Context, id string) (*Team, error)
+	GetTeamByHash(ctx context.Context, teamHash string) (*Team, error)
+	ListTeams(ctx context.Context) ([]*Team, error)
+	DeleteTeam(ctx context.Context, id string) error
+
+	// ---- 共享目录模块 ----
+	InsertSharedDirectory(ctx context.Context, dir *SharedDirectory) error
+	DeleteSharedDirectory(ctx context.Context, path string) error
+	ListSharedDirectories(ctx context.Context) ([]*SharedDirectory, error)
+
+	// ---- 频道模块 ----
+	CreateChannel(ctx context.Context, ch *Channel) error
+	GetChannel(ctx context.Context, id string) (*Channel, error)
+	ListChannelsByTeam(ctx context.Context, teamID string) ([]*Channel, error)
+	DeleteChannel(ctx context.Context, id string) error
+	AddChannelMember(ctx context.Context, channelID, pubkey string) error
+	RemoveChannelMember(ctx context.Context, channelID, pubkey string) error
+	GetChannelMembers(ctx context.Context, channelID string) ([]*ChannelMember, error)
+	IsChannelMember(ctx context.Context, channelID, pubkey string) (bool, error)
+
+	// ---- 共享组模块 ----
+	CreateShareGroup(ctx context.Context, sg *ShareGroup) error
+	GetShareGroup(ctx context.Context, id string) (*ShareGroup, error)
+	ListShareGroupsByTeam(ctx context.Context, teamID string) ([]*ShareGroup, error)
+	DeleteShareGroup(ctx context.Context, id string) error
+	AddDirectoryToShareGroup(ctx context.Context, groupID, dirPath string) error
+	RemoveDirectoryFromShareGroup(ctx context.Context, groupID, dirPath string) error
+	ListShareGroupDirs(ctx context.Context, groupID string) ([]*ShareGroupDir, error)
 }
 
 // DBTx 暴露了在事务中可用的操作

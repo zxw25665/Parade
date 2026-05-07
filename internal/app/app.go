@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -114,6 +115,8 @@ func (a *App) registerEventSubscribers() {
 			HLC:        payload.HLC,
 			SenderID:   payload.SenderID,
 			ReceiverID: db.ReceiverIDGroupChat,
+			TeamID:     payload.TeamID,
+			ChannelID:  payload.ChannelID,
 			Content:    encrypted,
 			Type:       payload.Type,
 			CreatedAt:  ev.Timestamp,
@@ -123,11 +126,13 @@ func (a *App) registerEventSubscribers() {
 		}
 
 		a.ui.Notify("ui_new_message", map[string]interface{}{
-			"id":        msg.ID,
-			"hlc":       msg.HLC,
-			"sender":    msg.SenderID,
-			"content":   string(payload.Content),
-			"timestamp": msg.CreatedAt,
+			"id":         msg.ID,
+			"hlc":        msg.HLC,
+			"sender":     msg.SenderID,
+			"team_id":    msg.TeamID,
+			"channel_id": msg.ChannelID,
+			"content":    string(payload.Content),
+			"timestamp":  msg.CreatedAt,
 		})
 	})
 
@@ -144,6 +149,8 @@ func (a *App) registerEventSubscribers() {
 			HLC:        payload.HLC,
 			SenderID:   payload.SenderID,
 			ReceiverID: payload.ReceiverID,
+			TeamID:     payload.TeamID,
+			ChannelID:  payload.ChannelID,
 			Content:    encrypted,
 			Type:       payload.Type,
 			CreatedAt:  ev.Timestamp,
@@ -157,6 +164,7 @@ func (a *App) registerEventSubscribers() {
 			"hlc":        msg.HLC,
 			"senderId":   msg.SenderID,
 			"receiverId": msg.ReceiverID,
+			"team_id":    msg.TeamID,
 			"content":    string(payload.Content),
 			"timestamp":  msg.CreatedAt,
 		})
@@ -191,14 +199,123 @@ func (a *App) CheckHasIdentity() bool {
 }
 
 func (a *App) JoinTeam(secret string) error {
-	a.crypto.SetTeamKey(secret)
-	if a.netEng != nil {
-		return a.netEng.Start(4327)
+	_, err := a.JoinTeamWithName("", secret)
+	return err
+}
+
+func (a *App) JoinTeamWithName(name, secret string) (string, error) {
+	teamID := uuid.New().String()
+	if name == "" {
+		name = "Default Team"
 	}
+
+	a.crypto.SetTeamKeyForTeam(teamID, secret)
+	if err := a.crypto.SetActiveTeam(teamID); err != nil {
+		return "", err
+	}
+
+	teamHash := a.crypto.TeamKeyHashFor(teamID)
+	team := &db.Team{
+		ID:        teamID,
+		Name:      name,
+		TeamHash:  teamHash,
+		CreatedAt: time.Now(),
+	}
+	if err := a.database.InsertTeam(context.Background(), team); err != nil {
+		return "", fmt.Errorf("failed to persist team: %w", err)
+	}
+
+	if a.netEng != nil {
+		if err := a.netEng.Start(4327); err != nil {
+			return "", err
+		}
+	}
+	return teamID, nil
+}
+
+func (a *App) LeaveTeam(teamID string) error {
+	if err := a.database.DeleteTeam(context.Background(), teamID); err != nil {
+		return fmt.Errorf("failed to delete team: %w", err)
+	}
+	a.crypto.RemoveTeamKey(teamID)
 	return nil
 }
 
-func (a *App) sendMessageWith(text string, receiverID string, encryptFn func([]byte) ([]byte, error), sendFn func([]byte) error) error {
+func (a *App) SwitchTeam(teamID string) error {
+	return a.crypto.SetActiveTeam(teamID)
+}
+
+func (a *App) CreateChannel(name string) error {
+	channelID := uuid.New().String()
+	activeTeam := a.crypto.GetActiveTeam()
+	myPub := a.crypto.GetPublicKeyBase64()
+	ch := &db.Channel{
+		ID:        channelID,
+		TeamID:    activeTeam,
+		Name:      name,
+		CreatedBy: myPub,
+		CreatedAt: time.Now(),
+	}
+	if err := a.database.CreateChannel(context.Background(), ch); err != nil {
+		return fmt.Errorf("failed to create channel: %w", err)
+	}
+	return a.database.AddChannelMember(context.Background(), channelID, myPub)
+}
+
+func (a *App) ListChannels() ([]map[string]interface{}, error) {
+	activeTeam := a.crypto.GetActiveTeam()
+	channels, err := a.database.ListChannelsByTeam(context.Background(), activeTeam)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]map[string]interface{}, 0, len(channels))
+	for _, c := range channels {
+		res = append(res, map[string]interface{}{
+			"id":         c.ID,
+			"team_id":    c.TeamID,
+			"name":       c.Name,
+			"created_by": c.CreatedBy,
+			"created_at": c.CreatedAt,
+		})
+	}
+	return res, nil
+}
+
+func (a *App) JoinChannel(channelID string) error {
+	myPub := a.crypto.GetPublicKeyBase64()
+	return a.database.AddChannelMember(context.Background(), channelID, myPub)
+}
+
+func (a *App) LeaveChannel(channelID string) error {
+	myPub := a.crypto.GetPublicKeyBase64()
+	return a.database.RemoveChannelMember(context.Background(), channelID, myPub)
+}
+
+func (a *App) ListTeams() ([]map[string]interface{}, error) {
+	teams, err := a.database.ListTeams(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	activeTeamID := a.crypto.GetActiveTeam()
+	res := make([]map[string]interface{}, 0, len(teams))
+	for _, t := range teams {
+		entry := map[string]interface{}{
+			"id":         t.ID,
+			"name":       t.Name,
+			"team_hash":  t.TeamHash,
+			"created_at": t.CreatedAt,
+			"active":     t.ID == activeTeamID,
+		}
+		res = append(res, entry)
+	}
+	return res, nil
+}
+
+func (a *App) GetActiveTeam() string {
+	return a.crypto.GetActiveTeam()
+}
+
+func (a *App) sendMessageWith(text string, receiverID string, channelID string, encryptFn func([]byte) ([]byte, error), sendFn func([]byte) error) error {
 	myPub := a.crypto.GetPublicKeyBase64()
 	hlc := GenerateHLC(myPub)
 	raw := []byte(text)
@@ -208,7 +325,7 @@ func (a *App) sendMessageWith(text string, receiverID string, encryptFn func([]b
 		return err
 	}
 	if err := a.database.InsertMessage(context.Background(), &db.Message{
-		ID: uuid.New().String(), HLC: hlc, SenderID: myPub, Content: enc, ReceiverID: receiverID, CreatedAt: time.Now(),
+		ID: uuid.New().String(), HLC: hlc, SenderID: myPub, Content: enc, ReceiverID: receiverID, TeamID: a.crypto.GetActiveTeam(), ChannelID: channelID, CreatedAt: time.Now(),
 	}); err != nil {
 		log.Printf("insert message failed: %v", err)
 	}
@@ -223,17 +340,23 @@ func (a *App) sendMessageWith(text string, receiverID string, encryptFn func([]b
 }
 
 func (a *App) SendTeamChat(text string) error {
-	return a.sendMessageWith(text, db.ReceiverIDGroupChat, a.crypto.EncryptTeam, a.netEng.BroadcastTeam)
+	return a.sendMessageWith(text, db.ReceiverIDGroupChat, "", a.crypto.EncryptTeam, a.netEng.BroadcastTeam)
 }
 
 func (a *App) SendPrivateChat(targetPubKey, text string) error {
 	if targetPubKey == "" {
 		return errors.New("target public key is required")
 	}
-	return a.sendMessageWith(text, targetPubKey,
+	return a.sendMessageWith(text, targetPubKey, "",
 		func(payload []byte) ([]byte, error) { return a.crypto.EncryptPrivate(payload, targetPubKey) },
 		func(payload []byte) error { return a.netEng.UnicastPrivate(targetPubKey, payload) },
 	)
+}
+
+func (a *App) SendChannelChat(channelID, text string) error {
+	return a.sendMessageWith(text, db.ReceiverIDGroupChat, channelID, a.crypto.EncryptTeam, func(payload []byte) error {
+		return a.netEng.BroadcastChannel(channelID, payload)
+	})
 }
 
 func (a *App) GetPeers() []map[string]string {
@@ -261,6 +384,72 @@ func (a *App) GetDirectoryChildren(path string) (interface{}, error) {
 	return a.fileEng.GetDirectoryChildren(path)
 }
 
+// ---- 共享组 API ----
+
+func (a *App) CreateShareGroup(name string) (string, error) {
+	groupID := uuid.New().String()
+	activeTeam := a.crypto.GetActiveTeam()
+	myPub := a.crypto.GetPublicKeyBase64()
+	sg := &db.ShareGroup{
+		ID:        groupID,
+		TeamID:    activeTeam,
+		Name:      name,
+		CreatedBy: myPub,
+		CreatedAt: time.Now(),
+	}
+	if err := a.database.CreateShareGroup(context.Background(), sg); err != nil {
+		return "", fmt.Errorf("failed to create share group: %w", err)
+	}
+	return groupID, nil
+}
+
+func (a *App) ListShareGroups() ([]map[string]interface{}, error) {
+	activeTeam := a.crypto.GetActiveTeam()
+	groups, err := a.database.ListShareGroupsByTeam(context.Background(), activeTeam)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]map[string]interface{}, 0, len(groups))
+	for _, g := range groups {
+		res = append(res, map[string]interface{}{
+			"id":         g.ID,
+			"team_id":    g.TeamID,
+			"name":       g.Name,
+			"created_by": g.CreatedBy,
+			"created_at": g.CreatedAt,
+		})
+	}
+	return res, nil
+}
+
+func (a *App) AddDirectoryToShareGroup(groupID, dirPath string) error {
+	return a.database.AddDirectoryToShareGroup(context.Background(), groupID, dirPath)
+}
+
+func (a *App) RemoveDirectoryFromShareGroup(groupID, dirPath string) error {
+	return a.database.RemoveDirectoryFromShareGroup(context.Background(), groupID, dirPath)
+}
+
+func (a *App) DeleteShareGroup(groupID string) error {
+	return a.database.DeleteShareGroup(context.Background(), groupID)
+}
+
+func (a *App) GetShareGroupDirs(groupID string) ([]map[string]interface{}, error) {
+	dirs, err := a.database.ListShareGroupDirs(context.Background(), groupID)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]map[string]interface{}, 0, len(dirs))
+	for _, d := range dirs {
+		res = append(res, map[string]interface{}{
+			"group_id": d.GroupID,
+			"dir_path": d.DirPath,
+			"added_at": d.AddedAt,
+		})
+	}
+	return res, nil
+}
+
 func (a *App) StartDownload(targetPubKey, virtualPath, localSavePath string) error {
 	if a.netEng == nil {
 		return errors.New("network engine not available")
@@ -269,7 +458,14 @@ func (a *App) StartDownload(targetPubKey, virtualPath, localSavePath string) err
 }
 
 func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, error) {
-	msgs, err := a.database.GetRecentMessages(context.Background(), limit, offset)
+	activeTeam := a.crypto.GetActiveTeam()
+	var msgs []*db.Message
+	var err error
+	if activeTeam != "" {
+		msgs, err = a.database.GetRecentMessagesByTeam(context.Background(), activeTeam, limit, offset)
+	} else {
+		msgs, err = a.database.GetRecentMessages(context.Background(), limit, offset)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -285,6 +481,28 @@ func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, err
 		}
 		res = append(res, map[string]interface{}{
 			"id": m.ID, "hlc": m.HLC, "sender": m.SenderID, "content": content, "timestamp": m.CreatedAt,
+		})
+	}
+	return res, nil
+}
+
+func (a *App) GetRecentHistoryByChannel(channelID string, limit, offset int) ([]map[string]interface{}, error) {
+	msgs, err := a.database.GetRecentMessagesByChannel(context.Background(), channelID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	var res []map[string]interface{}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		dec, err := a.crypto.DecryptLocal(m.Content)
+		content := "[message corrupted]"
+		if err != nil {
+			log.Printf("GetRecentHistoryByChannel: failed to decrypt message %s: %v", m.ID, err)
+		} else {
+			content = string(dec)
+		}
+		res = append(res, map[string]interface{}{
+			"id": m.ID, "hlc": m.HLC, "sender": m.SenderID, "channel_id": m.ChannelID, "content": content, "timestamp": m.CreatedAt,
 		})
 	}
 	return res, nil

@@ -27,6 +27,13 @@ func (m *mockCrypto) EncryptTeam(plaintext []byte) ([]byte, error)      { return
 func (m *mockCrypto) DecryptTeam(ciphertext []byte) ([]byte, error)     { return ciphertext, nil }
 func (m *mockCrypto) EncryptPrivate(_ []byte, _ string) ([]byte, error) { return nil, errors.New("not implemented") }
 func (m *mockCrypto) DecryptPrivate(_ []byte, _ string) ([]byte, error) { return nil, errors.New("not implemented") }
+func (m *mockCrypto) SetTeamKeyForTeam(_, _ string)                             {}
+func (m *mockCrypto) RemoveTeamKey(_ string)                                    {}
+func (m *mockCrypto) SetActiveTeam(_ string) error                              { return nil }
+func (m *mockCrypto) GetActiveTeam() string                                     { return "" }
+func (m *mockCrypto) GetTeamIDs() []string                                      { return nil }
+func (m *mockCrypto) TeamKeyHashFor(_ string) string                            { return "mock-team-hash" }
+func (m *mockCrypto) DecryptTeamForTeam(_ string, ciphertext []byte) ([]byte, error) { return ciphertext, nil }
 
 var _ crypto.Engine = (*mockCrypto)(nil)
 

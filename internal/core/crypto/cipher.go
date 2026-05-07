@@ -76,29 +76,85 @@ func (c *paradeCrypto) DecryptLocal(ciphertext[]byte) ([]byte, error) {
 // ---- 队伍网络加密实现 ----
 
 func (c *paradeCrypto) SetTeamKey(teamPassword string) {
+	c.SetTeamKeyForTeam("", teamPassword)
+}
+
+func (c *paradeCrypto) SetTeamKeyForTeam(teamID, teamPassword string) {
+	if c.teamKeys == nil {
+		c.teamKeys = make(map[string][]byte)
+	}
 	hash := sha256.Sum256([]byte(teamPassword))
-	c.teamKey = hash[:]
+	c.teamKeys[teamID] = hash[:]
+	if c.activeTeam == "" {
+		c.activeTeam = teamID
+	}
+}
+
+func (c *paradeCrypto) RemoveTeamKey(teamID string) {
+	delete(c.teamKeys, teamID)
+	if c.activeTeam == teamID {
+		c.activeTeam = ""
+		for id := range c.teamKeys {
+			c.activeTeam = id
+			break
+		}
+	}
+}
+
+func (c *paradeCrypto) SetActiveTeam(teamID string) error {
+	if _, ok := c.teamKeys[teamID]; !ok {
+		return fmt.Errorf("team key not found: %s", teamID)
+	}
+	c.activeTeam = teamID
+	return nil
+}
+
+func (c *paradeCrypto) GetActiveTeam() string {
+	return c.activeTeam
+}
+
+func (c *paradeCrypto) GetTeamIDs() []string {
+	ids := make([]string, 0, len(c.teamKeys))
+	for id := range c.teamKeys {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (c *paradeCrypto) TeamKeyHash() string {
-	if c.teamKey == nil {
-		return ""
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(c.teamKey))
+	return c.TeamKeyHashFor(c.activeTeam)
 }
 
-func (c *paradeCrypto) EncryptTeam(plaintext[]byte) ([]byte, error) {
-	if c.teamKey == nil {
+func (c *paradeCrypto) TeamKeyHashFor(teamID string) string {
+	key, ok := c.teamKeys[teamID]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(key))
+}
+
+func (c *paradeCrypto) EncryptTeam(plaintext []byte) ([]byte, error) {
+	key, ok := c.teamKeys[c.activeTeam]
+	if !ok {
 		return nil, errors.New("team key not set")
 	}
-	return aesGCMEncrypt(c.teamKey, plaintext)
+	return aesGCMEncrypt(key, plaintext)
 }
 
 func (c *paradeCrypto) DecryptTeam(ciphertext []byte) ([]byte, error) {
-	if c.teamKey == nil {
+	key, ok := c.teamKeys[c.activeTeam]
+	if !ok {
 		return nil, errors.New("team key not set")
 	}
-	return aesGCMDecrypt(c.teamKey, ciphertext)
+	return aesGCMDecrypt(key, ciphertext)
+}
+
+func (c *paradeCrypto) DecryptTeamForTeam(teamID string, ciphertext []byte) ([]byte, error) {
+	key, ok := c.teamKeys[teamID]
+	if !ok {
+		return nil, fmt.Errorf("team key not found for team: %s", teamID)
+	}
+	return aesGCMDecrypt(key, ciphertext)
 }
 
 // ---- 私聊 E2E 端到端加密实现 ----

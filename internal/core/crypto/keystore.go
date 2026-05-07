@@ -21,14 +21,17 @@ type IdentityFile struct {
 
 // paradeCrypto 实现了 Engine 接口
 type paradeCrypto struct {
-	masterKey[]byte // 主密钥 (Argon2推导，用于解密本地数据库)
-	privKey[]byte // 我的私钥 (Curve25519, 32字节)
-	pubKey[]byte // 我的公钥 (Curve25519, 32字节)
-	teamKey[]byte // 队伍对称密钥
+	masterKey  []byte            // 主密钥 (Argon2推导，用于解密本地数据库)
+	privKey    []byte            // 我的私钥 (Curve25519, 32字节)
+	pubKey     []byte            // 我的公钥 (Curve25519, 32字节)
+	teamKeys   map[string][]byte // 多队伍对称密钥环
+	activeTeam string            // 当前活跃的队伍 ID
 }
 
 func NewEngine() Engine {
-	return &paradeCrypto{}
+	return &paradeCrypto{
+		teamKeys: make(map[string][]byte),
+	}
 }
 
 // 派生主密钥 (使用 Argon2id)
@@ -100,6 +103,9 @@ func (c *paradeCrypto) LoadIdentity(password, filepath string) error {
 	c.masterKey = masterKey
 	c.privKey = privKey
 	c.pubKey = idFile.PubKey
+	if c.teamKeys == nil {
+		c.teamKeys = make(map[string][]byte)
+	}
 
 	return nil
 }
