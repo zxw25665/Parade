@@ -384,6 +384,28 @@ func (a *App) GetDirectoryChildren(path string) (interface{}, error) {
 	return a.fileEng.GetDirectoryChildren(path)
 }
 
+// GetRemoteDirectoryChildren 浏览远程对等节点的共享目录
+func (a *App) GetRemoteDirectoryChildren(targetPubKey, path string) ([]map[string]interface{}, error) {
+	if a.netEng == nil {
+		return nil, errors.New("network engine not available")
+	}
+	entries, err := a.netEng.BrowseRemoteDirectory(targetPubKey, path)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]map[string]interface{}, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, map[string]interface{}{
+			"name":        e.GetName(),
+			"path":        e.GetPath(),
+			"isDirectory": e.GetIsDirectory(),
+			"size":        e.GetSize(),
+			"hash":        e.GetHash(),
+		})
+	}
+	return result, nil
+}
+
 // ---- 共享组 API ----
 
 func (a *App) CreateShareGroup(name string) (string, error) {
