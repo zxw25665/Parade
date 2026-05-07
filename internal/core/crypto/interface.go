@@ -14,6 +14,15 @@ type Engine interface {
 	// 返回队伍密钥的十六进制哈希，用于 mDNS TXT 同队过滤
 	TeamKeyHash() string
 
+	// ---- 多队伍密钥管理 ----
+	SetTeamKeyForTeam(teamID, teamPassword string)
+	RemoveTeamKey(teamID string)
+	SetActiveTeam(teamID string) error
+	GetActiveTeam() string
+	GetTeamIDs() []string
+	TeamKeyHashFor(teamID string) string
+	DecryptTeamForTeam(teamID string, ciphertext []byte) ([]byte, error)
+
 	// ---- 核心加解密机制 ----
 	// 落盘加密：使用用户主密钥加密（落盘前调用）
 	EncryptLocal(plaintext []byte) ([]byte, error)

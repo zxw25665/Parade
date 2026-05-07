@@ -160,10 +160,18 @@ func (e *Engine) Start(port int) error {
 	}
 
 	teamHash := e.crypto.TeamKeyHash()
+	teamIDs := e.crypto.GetTeamIDs()
+	var teamHashes []string
+	for _, tid := range teamIDs {
+		if h := e.crypto.TeamKeyHashFor(tid); h != "" {
+			teamHashes = append(teamHashes, h)
+		}
+	}
+	teamHashStr := strings.Join(teamHashes, ",")
 
 	info := []string{
 		fmt.Sprintf("pubkey=%s", e.crypto.GetPublicKeyBase64()),
-		fmt.Sprintf("team=%s", teamHash),
+		fmt.Sprintf("team=%s", teamHashStr),
 	}
 	lanIPs := []net.IP{lanIP}
 
@@ -188,7 +196,7 @@ func (e *Engine) Start(port int) error {
 
 	// 启动 Discovery 循环
 	e.discovery.SetLocalPubKey(e.crypto.GetPublicKeyBase64())
-	e.discovery.SetTeamHash(teamHash)
+	e.discovery.SetTeamHashes(teamHashes)
 	if iface != nil {
 		e.discovery.SetIface(iface)
 	}
@@ -281,8 +289,14 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 		return errors.New("network engine not started")
 	}
 
-	// 获取所有对等节点
-	peers := e.discovery.Snapshot()
+	// 获取当前队伍的对等节点
+	teamHash := e.crypto.TeamKeyHash()
+	var peers []PeerInfo
+	if teamHash != "" {
+		peers = e.discovery.GetPeersForTeam(teamHash)
+	} else {
+		peers = e.discovery.Snapshot()
+	}
 	if len(peers) == 0 {
 		// 没有对等节点，仅本地处理
 		plain, err := e.crypto.DecryptTeam(payload)
@@ -306,6 +320,92 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 			Payload:    payload,
 			Type:       0,
 			ReceiverId: "",
+			TeamId:     e.crypto.GetActiveTeam(),
+		}
+
+		for _, peer := range peers {
+			go func(p PeerInfo) {
+				conn, err := e.getOrDialPeer(p.PubKeyBase64, p.IPAddress)
+				if err != nil {
+					fmt.Printf("failed to dial peer %s: %v\n", p.PubKeyBase64, err)
+					return
+				}
+
+				client := chatpb.NewChatServiceClient(conn)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				stream, err := client.StreamChat(ctx)
+				if err != nil {
+					fmt.Printf("failed to create stream with %s: %v\n", p.PubKeyBase64, err)
+					return
+				}
+				defer stream.CloseSend()
+
+				// 发送消息
+				if err := stream.Send(envelope); err != nil {
+					fmt.Printf("failed to send to %s: %v\n", p.PubKeyBase64, err)
+					e.removePeerConnection(p.PubKeyBase64)
+					return
+				}
+
+				// 等待确认
+				_, err = stream.Recv()
+				if err != nil {
+					fmt.Printf("failed to receive ack from %s: %v\n", p.PubKeyBase64, err)
+					e.removePeerConnection(p.PubKeyBase64)
+					return
+				}
+			}(peer)
+		}
+	}()
+
+	return nil
+}
+
+// BroadcastChannel 广播频道消息到所有发现的对等节点。
+func (e *Engine) BroadcastChannel(channelID string, payload []byte) error {
+	e.mu.RLock()
+	started := e.started
+	e.mu.RUnlock()
+	if !started {
+		return errors.New("network engine not started")
+	}
+
+	// 获取当前队伍的对等节点
+	teamHash := e.crypto.TeamKeyHash()
+	var peers []PeerInfo
+	if teamHash != "" {
+		peers = e.discovery.GetPeersForTeam(teamHash)
+	} else {
+		peers = e.discovery.Snapshot()
+	}
+	if len(peers) == 0 {
+		// 没有对等节点，仅本地处理
+		plain, err := e.crypto.DecryptTeam(payload)
+		if err != nil {
+			return err
+		}
+
+		var msg eventbus.MsgReceivedPayload
+		if err := json.Unmarshal(plain, &msg); err != nil {
+			return err
+		}
+		msg.ChannelID = channelID
+
+		e.bus.Publish(eventbus.TopicMsgReceived, msg)
+		return nil
+	}
+
+	// 异步发送到所有对等节点
+	go func() {
+		envelope := &chatpb.Envelope{
+			SenderId:   e.crypto.GetPublicKeyBase64(),
+			Payload:    payload,
+			Type:       0,
+			ReceiverId: "",
+			TeamId:     e.crypto.GetActiveTeam(),
+			ChannelId:  channelID,
 		}
 
 		for _, peer := range peers {
@@ -381,6 +481,7 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 			Payload:    wrapped,
 			Type:       1,
 			ReceiverId: targetPubKey,
+			TeamId:     e.crypto.GetActiveTeam(),
 		}
 
 		conn, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress)
@@ -513,6 +614,39 @@ func (e *Engine) StartDownload(targetPubKey, virtualPath, localSavePath string) 
 		meta.GetTotalSize(),
 		DefaultDownloadOptions(),
 	)
+}
+
+func (e *Engine) BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error) {
+	e.mu.RLock()
+	started := e.started
+	e.mu.RUnlock()
+	if !started {
+		return nil, errors.New("network engine not started")
+	}
+
+	peer, exists := e.discovery.GetPeerByPubKey(targetPubKey)
+	if !exists {
+		return nil, fmt.Errorf("peer %s not found in discovery", targetPubKey)
+	}
+
+	conn, err := e.getOrDialDataPeer(peer.PubKeyBase64, peer.IPAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to peer data plane: %w", err)
+	}
+
+	client := pb.NewFileTransferServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := client.BrowseDirectory(ctx, &pb.BrowseRequest{
+		PeerId: targetPubKey,
+		Path:   path,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("browse directory RPC failed: %w", err)
+	}
+
+	return resp.GetEntries(), nil
 }
 
 // getOrDialPeer 获取或建立到对等节点的控制面 gRPC 连接。
@@ -727,7 +861,11 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 			}
 		default: // Type 0 (team) or 99 (test): DecryptTeam only
 			var err error
-			plain, err = cs.engine.crypto.DecryptTeam(envelope.Payload)
+			if envelope.TeamId != "" {
+				plain, err = cs.engine.crypto.DecryptTeamForTeam(envelope.TeamId, envelope.Payload)
+			} else {
+				plain, err = cs.engine.crypto.DecryptTeam(envelope.Payload)
+			}
 			if err != nil {
 				fmt.Printf("[chat] DecryptTeam failed: %v\n", err)
 				continue
@@ -739,6 +877,9 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 			fmt.Printf("[chat] unmarshal error: %v\n", err)
 			continue
 		}
+
+		msg.TeamID = envelope.TeamId
+		msg.ChannelID = envelope.ChannelId
 
 		if envelope.Type == 1 {
 			msg.ReceiverID = envelope.ReceiverId

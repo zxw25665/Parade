@@ -13,4 +13,6 @@ type FileTransferEngine interface {
 	PrepareDownload(ctx context.Context, taskID, filePath, peerID string, totalSize int64) (int64, error)
 	SaveChunk(ctx context.Context, taskID, targetPath, peerID string, data []byte, offset int64, totalSize int64) error
 	GetMissingChunks(ctx context.Context, taskID, targetPath string) ([]int64, error)
+	GetSharedRoots() []string
+	GetDirectoryChildren(absPath string) (interface{}, error)
 }

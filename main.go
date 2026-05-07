@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"fmt"
 	"log"
 
 	"github.com/wailsapp/wails/v2"
@@ -46,6 +47,9 @@ func main() {
 	fileEngine := file.NewEngine().
 		WithDatabase(database).
 		WithEventBus(eventBus)
+	if err := fileEngine.LoadSharedDirectories(); err != nil {
+		fmt.Printf("failed to load shared directories: %v\n", err)
+	}
 	defer fileEngine.Close()
 
 	netEngine := network.NewEngine(eventBus, cry)
