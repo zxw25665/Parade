@@ -11,6 +11,7 @@ import (
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
 	"parade/internal/network"
+	pb "parade/internal/network/pb"
 )
 
 type IntegrationMockNetwork struct {
@@ -21,6 +22,11 @@ type IntegrationMockNetwork struct {
 func (n *IntegrationMockNetwork) Start(p int) error { return nil }
 func (n *IntegrationMockNetwork) Stop() error { return nil }
 func (n *IntegrationMockNetwork) BroadcastTeam(b []byte) error {
+	n.BroadcastCount++
+	n.LastPayload = b
+	return nil
+}
+func (n *IntegrationMockNetwork) BroadcastChannel(channelID string, b []byte) error {
 	n.BroadcastCount++
 	n.LastPayload = b
 	return nil
@@ -36,6 +42,9 @@ func (n *IntegrationMockNetwork) ConnectToPeer(ip string) (*network.PeerConnectR
 	}, nil
 }
 func (n *IntegrationMockNetwork) OnForeground() {}
+func (n *IntegrationMockNetwork) BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error) {
+	return nil, nil
+}
 
 type IntegrationMockFile struct{}
 
@@ -107,6 +116,7 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 			HLC:      ts + "_9999_TEST",
 			SenderID: "BOB_ID",
 			Content:  []byte(remoteMsg),
+			TeamID:   application.GetActiveTeam(),
 		})
 
 		time.Sleep(100 * time.Millisecond)

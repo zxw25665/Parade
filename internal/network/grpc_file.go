@@ -5,9 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"parade/internal/core/eventbus"
 	"parade/internal/file"
 	pb "parade/internal/network/pb"
@@ -158,6 +163,63 @@ func (s *FileService) DownloadFile(req *pb.FileRequest, stream pb.FileTransferSe
 
 		offset += int64(len(chunk))
 	}
+}
+
+func (s *FileService) BrowseDirectory(ctx context.Context, req *pb.BrowseRequest) (*pb.BrowseResponse, error) {
+	path := req.GetPath()
+	if path == "" {
+		roots := s.fileEngine.GetSharedRoots()
+		entries := make([]*pb.BrowseEntry, 0, len(roots))
+		for _, root := range roots {
+			info, err := os.Stat(root)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, &pb.BrowseEntry{
+				Name:        filepath.Base(root),
+				Path:        root,
+				IsDirectory: true,
+				Size:        info.Size(),
+			})
+		}
+		return &pb.BrowseResponse{Path: "", Entries: entries}, nil
+	}
+
+	absPath := filepath.Clean(path)
+	sharedRoots := s.fileEngine.GetSharedRoots()
+	allowed := false
+	for _, root := range sharedRoots {
+		if strings.HasPrefix(absPath, root) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, status.Error(codes.PermissionDenied, "path not in shared directories")
+	}
+
+	children, err := s.fileEngine.GetDirectoryChildren(absPath)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to list directory: %v", err)
+	}
+
+	nodes, ok := children.([]*file.FileNode)
+	if !ok {
+		return nil, status.Error(codes.Internal, "unexpected type from file engine")
+	}
+
+	entries := make([]*pb.BrowseEntry, 0, len(nodes))
+	for _, n := range nodes {
+		entries = append(entries, &pb.BrowseEntry{
+			Name:        n.Name,
+			Path:        n.Path,
+			IsDirectory: n.IsFolder,
+			Size:        n.Size,
+			Hash:        n.Hash,
+		})
+	}
+
+	return &pb.BrowseResponse{Path: absPath, Entries: entries}, nil
 }
 
 type DownloadDeps struct {

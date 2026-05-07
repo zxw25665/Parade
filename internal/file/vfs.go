@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,8 +9,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	"parade/internal/core/db"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/google/uuid"
 )
 
 // FileNode 是本地虚拟文件树的节点。
@@ -54,6 +59,20 @@ func (e *Engine) ShareDirectory(absPath string) error {
 		return err
 	}
 	e.invalidateTreeCache(root)
+
+	runtime := e.getRuntime()
+	if runtime != nil && runtime.database != nil {
+		dir := &db.SharedDirectory{
+			ID:        uuid.New().String(),
+			Path:      root,
+			TeamID:    "",
+			CreatedAt: time.Now(),
+		}
+		if err := runtime.database.InsertSharedDirectory(context.Background(), dir); err != nil {
+			fmt.Printf("[file] failed to persist shared directory: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
@@ -69,6 +88,14 @@ func (e *Engine) UnshareDirectory(absPath string) error {
 	e.mu.Unlock()
 	e.invalidateTreeCache(root)
 	e.stopRootWatcher(root)
+
+	runtime := e.getRuntime()
+	if runtime != nil && runtime.database != nil {
+		if err := runtime.database.DeleteSharedDirectory(context.Background(), root); err != nil {
+			fmt.Printf("[file] failed to delete shared directory from DB: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
@@ -90,6 +117,47 @@ func (e *Engine) Close() error {
 		e.stopRootWatcher(root)
 	}
 	return nil
+}
+
+// LoadSharedDirectories 从数据库加载持久化的共享目录并在内存中恢复。
+func (e *Engine) LoadSharedDirectories() error {
+	runtime := e.getRuntime()
+	if runtime == nil || runtime.database == nil {
+		return nil
+	}
+
+	dirs, err := runtime.database.ListSharedDirectories(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to load shared directories: %w", err)
+	}
+
+	for _, dir := range dirs {
+		if _, statErr := os.Stat(dir.Path); statErr != nil {
+			continue
+		}
+		e.mu.Lock()
+		e.sharedRoots[dir.Path] = struct{}{}
+		e.mu.Unlock()
+		if err := e.ensureRootWatcher(dir.Path); err != nil {
+			e.mu.Lock()
+			delete(e.sharedRoots, dir.Path)
+			e.mu.Unlock()
+			continue
+		}
+		e.invalidateTreeCache(dir.Path)
+	}
+	return nil
+}
+
+// GetSharedRoots 返回当前所有共享目录根的列表。
+func (e *Engine) GetSharedRoots() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	roots := make([]string, 0, len(e.sharedRoots))
+	for root := range e.sharedRoots {
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 // GetLocalTree 返回当前所有共享目录的虚拟树。

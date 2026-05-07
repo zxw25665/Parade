@@ -31,6 +31,8 @@ export function useEvents() {
         sender: data.sender,
         content: data.content,
         timestamp: data.timestamp,
+        teamId: data.team_id || '',
+        channelId: data.channel_id || '',
         direction: 'receive'
       })
     })
@@ -43,6 +45,7 @@ export function useEvents() {
         receiverId: data.receiverId,
         content: data.content,
         timestamp: data.timestamp,
+        teamId: data.team_id || '',
         direction: data.senderId ? 'receive' : 'send'
       })
     })

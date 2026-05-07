@@ -26,6 +26,8 @@ type MsgReceivedPayload struct {
 	Content    []byte
 	Type       int
 	ReceiverID string
+	TeamID     string
+	ChannelID  string
 }
 
 // FileProgressPayload 对应文件进度事件
