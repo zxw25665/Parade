@@ -2,58 +2,113 @@
   <div class="panel">
     <h2>File Sharing &amp; Browsing</h2>
 
-    <!-- Share -->
-    <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Share a Directory</h3>
-    <div class="row">
-      <input v-model="sharePath" placeholder="/absolute/path/to/dir" style="flex:1" />
-      <button @click="doShare" :disabled="!sharePath || loading">Share</button>
-    </div>
-    <div v-if="sharedDirs.length" class="list" style="margin-bottom:12px">
-      <div class="list-item" v-for="d in sharedDirs" :key="d">
-        <span style="flex:1;font-size:12px">{{ d }}</span>
-        <button @click="doUnshare(d)" style="font-size:11px;padding:2px 8px">Unshare</button>
-      </div>
-    </div>
-
-    <!-- Browse peer -->
-    <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Browse Peer Files</h3>
-    <div class="row">
-      <select v-model="browsePeer" style="flex:1">
-        <option value="">-- Select peer --</option>
-        <option v-for="p in peers" :key="p.pubkey" :value="p.pubkey">
-          {{ p.ip }} ({{ p.pubkey.slice(0, 12) }}...)
-        </option>
-      </select>
-      <button @click="doBrowse" :disabled="!browsePeer || loading">Browse</button>
-    </div>
-    <div v-if="browsePath" style="font-size:12px;margin-bottom:8px;color:#8a8aaf">
-      Path: {{ browsePath }}
-      <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px" :disabled="browsePath === ''">Up</button>
-    </div>
-    <div class="list" v-if="dirEntries.length">
-      <div class="list-item" v-for="entry in dirEntries" :key="entry.Path || entry.path">
-        <span style="cursor:pointer" @click="doClickEntry(entry)">
-          {{ (entry.IsFolder || entry.isFolder) ? '📁' : '📄' }}
-          {{ entry.Name || entry.name }}
-          <span v-if="!(entry.IsFolder || entry.isFolder)" style="font-size:11px;color:#8a8aaf">
-            ({{ formatSize(entry.Size || entry.size) }})
-          </span>
-        </span>
-        <span v-if="!(entry.IsFolder || entry.isFolder)">
-          <button @click="doDownload(entry)" style="font-size:11px;padding:2px 8px">Download</button>
-        </span>
-      </div>
-    </div>
-    <div v-else-if="browsePeer && dirEntries.length === 0 && !loading" style="font-size:13px;color:#8a8aaf;margin-top:8px">
-      Empty directory or unable to browse
+    <!-- Mode toggle -->
+    <div class="row" style="margin-bottom:16px">
+      <button
+        @click="mode = 'local'"
+        :class="mode === 'local' ? 'badge badge-green' : 'badge'"
+        style="margin-right:8px;cursor:pointer"
+      >
+        Local
+      </button>
+      <button
+        @click="mode = 'remote'"
+        :class="mode === 'remote' ? 'badge badge-green' : 'badge'"
+        style="cursor:pointer"
+      >
+        Remote
+      </button>
     </div>
 
-    <!-- Download -->
-    <div v-if="downloadTarget" style="margin-top:12px">
-      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Download: {{ downloadTarget.name || downloadTarget.Name }}</h3>
+    <!-- LOCAL mode -->
+    <div v-if="mode === 'local'">
+      <!-- Share directory -->
+      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Share a Directory</h3>
       <div class="row">
-        <input v-model="localSavePath" placeholder="Local save path" style="flex:1" />
-        <button @click="doStartDownload" :disabled="!localSavePath || loading">Start Download</button>
+        <input v-model="sharePath" placeholder="/absolute/path/to/dir" style="flex:1" />
+        <button @click="doShare" :disabled="!sharePath || loading">Share</button>
+      </div>
+
+      <!-- Shared directories list -->
+      <div v-if="sharedDirs.length" class="list" style="margin-bottom:12px">
+        <div class="list-item" v-for="d in sharedDirs" :key="d">
+          <span style="flex:1;font-size:12px">{{ d }}</span>
+          <button @click="doUnshare(d)" style="font-size:11px;padding:2px 8px">Unshare</button>
+        </div>
+      </div>
+
+      <!-- Local directory browser -->
+      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Browse Local Files</h3>
+      <div v-if="browsePath" style="font-size:12px;margin-bottom:8px;color:#8a8aaf">
+        Path: {{ browsePath }}
+        <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px;margin-left:8px">Up</button>
+      </div>
+      <div class="list" v-if="dirEntries.length">
+        <div class="list-item" v-for="entry in dirEntries" :key="entry.path">
+          <span style="cursor:pointer" @click="doClickEntry(entry)">
+            {{ entry.isFolder ? '📁' : '📄' }}
+            {{ entry.name }}
+            <span v-if="!entry.isFolder" style="font-size:11px;color:#8a8aaf">
+              ({{ formatSize(entry.size) }})
+            </span>
+          </span>
+        </div>
+      </div>
+      <div v-else-if="!loading" style="font-size:13px;color:#8a8aaf;margin-top:8px">
+        Click a shared directory above to browse
+      </div>
+    </div>
+
+    <!-- REMOTE mode -->
+    <div v-if="mode === 'remote'">
+      <!-- Peer selector -->
+      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Select Peer</h3>
+      <div class="row">
+        <select v-model="browsePeer" style="flex:1">
+          <option value="">-- Select peer --</option>
+          <option v-for="p in peers" :key="p.pubkey" :value="p.pubkey">
+            {{ p.ip }} ({{ p.pubkey.slice(0, 12) }}...)
+          </option>
+        </select>
+        <button @click="doBrowse" :disabled="!browsePeer || loading">Browse</button>
+      </div>
+
+      <!-- Path breadcrumb -->
+      <div v-if="browsePath !== ''" style="font-size:12px;margin:12px 0 8px;color:#8a8aaf">
+        Path: {{ browsePath || '/' }}
+        <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px;margin-left:8px">Up</button>
+      </div>
+
+      <!-- Remote directory listing -->
+      <div class="list" v-if="dirEntries.length" style="margin-top:12px">
+        <div class="list-item" v-for="entry in dirEntries" :key="entry.path">
+          <span style="cursor:pointer;flex:1" @click="doClickEntry(entry)">
+            {{ entry.isFolder ? '📁' : '📄' }}
+            {{ entry.name }}
+            <span v-if="!entry.isFolder" style="font-size:11px;color:#8a8aaf">
+              ({{ formatSize(entry.size) }})
+            </span>
+          </span>
+          <button
+            v-if="!entry.isFolder"
+            @click="doDownload(entry)"
+            style="font-size:11px;padding:2px 8px"
+          >
+            Download
+          </button>
+        </div>
+      </div>
+      <div v-else-if="browsePeer && !loading" style="font-size:13px;color:#8a8aaf;margin-top:8px">
+        Empty directory or unable to browse
+      </div>
+
+      <!-- Download form -->
+      <div v-if="downloadTarget" style="margin-top:16px;padding:12px;background:#0f3460;border-radius:6px">
+        <h3 style="font-size:14px;margin:0 0 8px 0;color:#aaa">Download: {{ downloadTarget.name }}</h3>
+        <div class="row">
+          <input v-model="localSavePath" placeholder="Local save path" style="flex:1" />
+          <button @click="doStartDownload" :disabled="!localSavePath || loading">Start Download</button>
+        </div>
       </div>
     </div>
 
@@ -66,23 +121,43 @@
 import { ref, computed, inject } from 'vue'
 import { useBackend } from '../composables/useBackend.js'
 
-const { shareDirectory, unshareDirectory, getDirectoryChildren, startDownload } = useBackend()
+const {
+  shareDirectory,
+  unshareDirectory,
+  getDirectoryChildren,
+  getRemoteDirectoryChildren,
+  startDownload
+} = useBackend()
+
 const state = inject('events')
+const store = inject('store')
 const peers = computed(() => state.peers)
 
-const sharePath = ref('')
-const sharedDirs = ref([])
+const mode = ref('local')
 const browsePeer = ref('')
 const browsePath = ref('')
 const dirEntries = ref([])
+const sharedDirs = ref([])
+const sharePath = ref('')
 const downloadTarget = ref(null)
 const localSavePath = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 const successMsg = ref('')
 
+function normalizeEntry(entry) {
+  return {
+    name: entry.Name || entry.name,
+    path: entry.Path || entry.path,
+    isFolder: entry.IsFolder || entry.isFolder || entry.is_directory,
+    size: entry.Size || entry.size
+  }
+}
+
 async function doShare() {
-  loading.value = true; errorMsg.value = ''; successMsg.value = ''
+  loading.value = true
+  errorMsg.value = ''
+  successMsg.value = ''
   try {
     await shareDirectory(sharePath.value)
     sharedDirs.value.push(sharePath.value)
@@ -96,7 +171,8 @@ async function doShare() {
 }
 
 async function doUnshare(dir) {
-  loading.value = true; errorMsg.value = ''
+  loading.value = true
+  errorMsg.value = ''
   try {
     await unshareDirectory(dir)
     sharedDirs.value = sharedDirs.value.filter(d => d !== dir)
@@ -109,14 +185,18 @@ async function doUnshare(dir) {
 }
 
 async function doBrowse() {
-  loading.value = true; errorMsg.value = ''
+  loading.value = true
+  errorMsg.value = ''
   browsePath.value = ''
+  dirEntries.value = []
   try {
-    const entries = await getDirectoryChildren('')
-    dirEntries.value = Array.isArray(entries) ? entries : []
-    if (dirEntries.value.length === 0) {
-      errorMsg.value = 'No files or directory is empty'
+    let entries
+    if (mode.value === 'local') {
+      entries = await getDirectoryChildren('')
+    } else {
+      entries = await getRemoteDirectoryChildren(browsePeer.value, '')
     }
+    dirEntries.value = Array.isArray(entries) ? entries.map(normalizeEntry) : []
   } catch (e) {
     errorMsg.value = e.toString()
     dirEntries.value = []
@@ -126,15 +206,18 @@ async function doBrowse() {
 }
 
 async function doClickEntry(entry) {
-  const isFolder = entry.IsFolder || entry.isFolder
-  if (isFolder) {
-    loading.value = true; errorMsg.value = ''
-    const name = entry.Name || entry.name
-    const path = entry.Path || entry.path || name
-    browsePath.value = browsePath.value ? browsePath.value + '/' + name : name
+  if (entry.isFolder) {
+    loading.value = true
+    errorMsg.value = ''
+    browsePath.value = entry.path
     try {
-      const entries = await getDirectoryChildren(path)
-      dirEntries.value = Array.isArray(entries) ? entries : []
+      let entries
+      if (mode.value === 'local') {
+        entries = await getDirectoryChildren(entry.path)
+      } else {
+        entries = await getRemoteDirectoryChildren(browsePeer.value, entry.path)
+      }
+      dirEntries.value = Array.isArray(entries) ? entries.map(normalizeEntry) : []
     } catch (e) {
       errorMsg.value = e.toString()
       dirEntries.value = []
@@ -148,11 +231,18 @@ async function doBrowseUp() {
   if (!browsePath.value) return
   const parts = browsePath.value.split('/')
   parts.pop()
-  browsePath.value = parts.join('/')
-  loading.value = true; errorMsg.value = ''
+  const parentPath = parts.join('/')
+  browsePath.value = parentPath
+  loading.value = true
+  errorMsg.value = ''
   try {
-    const entries = await getDirectoryChildren(browsePath.value || '')
-    dirEntries.value = Array.isArray(entries) ? entries : []
+    let entries
+    if (mode.value === 'local') {
+      entries = await getDirectoryChildren(parentPath)
+    } else {
+      entries = await getRemoteDirectoryChildren(browsePeer.value, parentPath)
+    }
+    dirEntries.value = Array.isArray(entries) ? entries.map(normalizeEntry) : []
   } catch (e) {
     errorMsg.value = e.toString()
     dirEntries.value = []
@@ -163,18 +253,18 @@ async function doBrowseUp() {
 
 function doDownload(entry) {
   downloadTarget.value = entry
-  const name = entry.Name || entry.name
-  localSavePath.value = '/tmp/' + name
+  localSavePath.value = '/tmp/' + entry.name
 }
 
 async function doStartDownload() {
   if (!downloadTarget.value || !browsePeer.value || !localSavePath.value) return
-  loading.value = true; errorMsg.value = ''; successMsg.value = ''
-  const name = downloadTarget.value.Name || downloadTarget.value.name
-  const vpath = browsePath.value ? browsePath.value + '/' + name : name
+  loading.value = true
+  errorMsg.value = ''
+  successMsg.value = ''
+  const vpath = downloadTarget.value.path
   try {
     await startDownload(browsePeer.value, vpath, localSavePath.value)
-    successMsg.value = `Download started: ${name}`
+    successMsg.value = `Download started: ${downloadTarget.value.name}`
     downloadTarget.value = null
     localSavePath.value = ''
   } catch (e) {
@@ -189,7 +279,10 @@ function formatSize(bytes) {
   const u = ['B', 'KB', 'MB', 'GB']
   let i = 0
   let s = bytes
-  while (s >= 1024 && i < u.length - 1) { s /= 1024; i++ }
+  while (s >= 1024 && i < u.length - 1) {
+    s /= 1024
+    i++
+  }
   return s.toFixed(1) + ' ' + u[i]
 }
 </script>

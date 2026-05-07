@@ -5,7 +5,11 @@ const store = reactive({
   loggedIn: false,
   pubkey: '',
   teamJoined: false,
-  peerTests: {}  // { "192.168.1.x": { ip, pubkey, phase1, phase2, phase3Send, phase3Recv, expanded } }
+  teams: [],
+  activeTeamId: '',
+  channels: [],
+  activeChannelId: '',
+  peerTests: {}
 })
 
 export function useStore() {

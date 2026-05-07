@@ -10,6 +10,7 @@ message FileRequest {
   string file_path = 3;
   int64 offset = 4;
   int32 chunk_size = 5;
+  string team_id = 6;
 }
 
 message FileChunk {
@@ -26,6 +27,7 @@ message FileChunk {
 message FileMetaRequest {
   string peer_id = 1;
   string file_path = 2;
+  string team_id = 3;
 }
 
 message FileMetaResponse {
@@ -35,7 +37,27 @@ message FileMetaResponse {
   int64 chunk_size = 4;
 }
 
+message BrowseRequest {
+  string peer_id = 1;
+  string path = 2;        // directory path to browse (empty = root of shared dirs)
+  string team_id = 3;
+}
+
+message BrowseEntry {
+  string name = 1;
+  string path = 2;
+  bool is_directory = 3;
+  int64 size = 4;
+  string hash = 5;
+}
+
+message BrowseResponse {
+  string path = 1;
+  repeated BrowseEntry entries = 2;
+}
+
 service FileTransferService {
   rpc DownloadFile(FileRequest) returns (stream FileChunk);
   rpc GetFileMeta(FileMetaRequest) returns (FileMetaResponse);
+  rpc BrowseDirectory(BrowseRequest) returns (BrowseResponse);
 }

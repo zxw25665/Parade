@@ -12,6 +12,7 @@ import (
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
 	"parade/internal/network"
+	pb "parade/internal/network/pb"
 )
 
 type MockNetwork struct {
@@ -21,6 +22,10 @@ type MockNetwork struct {
 func (m *MockNetwork) Start(p int) error { return nil }
 func (m *MockNetwork) Stop() error { return nil }
 func (m *MockNetwork) BroadcastTeam(b []byte) error {
+	m.LastPayload = b
+	return nil
+}
+func (m *MockNetwork) BroadcastChannel(channelID string, b []byte) error {
 	m.LastPayload = b
 	return nil
 }
@@ -36,6 +41,9 @@ func (m *MockNetwork) ConnectToPeer(ip string) (*network.PeerConnectResult, erro
 	}, nil
 }
 func (m *MockNetwork) OnForeground() {}
+func (m *MockNetwork) BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error) {
+	return nil, nil
+}
 
 type MockFile struct{}
 
@@ -131,6 +139,7 @@ func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 		HLC:       "2026-04-25T00:00:00.000Z_0001_TEST",
 		SenderID:  "test_node",
 		Content:   []byte("this is not valid encrypted data"),
+		TeamID:    a.crypto.GetActiveTeam(),
 		CreatedAt: time.Now(),
 	})
 
