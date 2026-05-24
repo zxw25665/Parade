@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>Downloads</h2>
 
     <!-- Active -->
     <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Active ({{ activeCount }})</h3>
@@ -23,7 +21,6 @@
       <span class="badge badge-green">done</span>
       {{ getFileName(d.filePath) }} — {{ formatSize(d.totalSize) }}
     </div>
-  </div>
 </template>
 
 <script setup>

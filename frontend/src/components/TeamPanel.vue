@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>Team</h2>
     <div v-if="!store.loggedIn" class="error" style="margin-bottom:8px">You must login in Identity page first</div>
     <div v-else>
       <div class="row" style="margin-bottom:12px">
@@ -30,7 +28,6 @@
     </div>
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
     <div v-if="successMsg" class="success">{{ successMsg }}</div>
-  </div>
 </template>
 
 <script setup>
