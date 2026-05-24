@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>File Sharing &amp; Browsing</h2>
 
     <!-- Mode toggle -->
     <div class="row" style="margin-bottom:16px">
@@ -114,7 +112,6 @@
 
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
     <div v-if="successMsg" class="success">{{ successMsg }}</div>
-  </div>
 </template>
 
 <script setup>

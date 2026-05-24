@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>Peers</h2>
 
     <!-- Manual connect -->
     <div class="row">
@@ -42,7 +40,6 @@
     <div v-else style="font-size:13px;color:#8a8aaf;margin-top:8px">
       No peers. Enter an IP above and click Connect.
     </div>
-  </div>
 </template>
 
 <script setup>
