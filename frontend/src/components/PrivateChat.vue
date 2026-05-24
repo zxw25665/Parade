@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>Private Chat</h2>
     <div class="row">
       <select v-model="targetPeer" style="flex:1">
         <option value="">-- Select peer --</option>
@@ -21,7 +19,6 @@
       <button @click="doSend" :disabled="!text || !targetPeer || loading">Send</button>
     </div>
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
-  </div>
 </template>
 
 <script setup>

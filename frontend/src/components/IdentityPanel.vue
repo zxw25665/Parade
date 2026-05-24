@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>Identity</h2>
 
     <div v-if="store.hasIdentity === null" class="row">Checking...</div>
 
@@ -25,7 +23,6 @@
 
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
     <div v-if="successMsg" class="success">{{ successMsg }}</div>
-  </div>
 </template>
 
 <script setup>
