@@ -1,8 +1,8 @@
 <template>
 
     <!-- Active -->
-    <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Active ({{ activeCount }})</h3>
-    <div v-if="activeCount === 0" style="font-size:13px;color:#8a8aaf">No active downloads</div>
+    <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">{{ $t('downloads.active') }} ({{ activeCount }})</h3>
+    <div v-if="activeCount === 0" style="font-size:13px;color:#8a8aaf">{{ $t('downloads.noActive') }}</div>
     <div v-for="(d, id) in downloads" :key="id" style="margin-bottom:12px;padding:8px;background:#16213e;border-radius:4px">
       <div style="font-size:12px;display:flex;justify-content:space-between">
         <span>{{ getFileName(d.filePath) }}</span>
@@ -15,16 +15,19 @@
     </div>
 
     <!-- Completed -->
-    <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Completed ({{ completed.length }})</h3>
-    <div v-if="completed.length === 0" style="font-size:13px;color:#8a8aaf">No completed downloads</div>
+    <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">{{ $t('downloads.completed') }} ({{ completed.length }})</h3>
+    <div v-if="completed.length === 0" style="font-size:13px;color:#8a8aaf">{{ $t('downloads.noCompleted') }}</div>
     <div class="list-item" v-for="d in completed" :key="d.taskId" style="font-size:12px">
-      <span class="badge badge-green">done</span>
+      <span class="badge badge-green">{{ $t('downloads.done') }}</span>
       {{ getFileName(d.filePath) }} — {{ formatSize(d.totalSize) }}
     </div>
 </template>
 
 <script setup>
 import { computed, inject } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const state = inject('events')
 const downloads = computed(() => state.downloads)
@@ -46,7 +49,7 @@ function formatSize(bytes) {
 }
 
 function getFileName(path) {
-  if (!path) return 'unknown'
+  if (!path) return t('downloads.unknown')
   return path.split('/').pop() || path.split('\\').pop() || path
 }
 </script>

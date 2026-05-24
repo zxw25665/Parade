@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,7 +93,10 @@ func (a *App) registerEventSubscribers() {
 	})
 
 	a.subscribe(eventbus.TopicMsgReceived, func(c context.Context, ev eventbus.Event) {
-		payload := ev.Payload.(eventbus.MsgReceivedPayload)
+		payload, ok := ev.Payload.(eventbus.MsgReceivedPayload)
+		if !ok {
+			return
+		}
 
 		// Type 99 = ephemeral test message, skip DB persistence
 		if payload.Type == 99 {
@@ -121,7 +126,7 @@ func (a *App) registerEventSubscribers() {
 			Type:       payload.Type,
 			CreatedAt:  ev.Timestamp,
 		}
-		if err := a.database.InsertMessage(context.Background(), msg); err != nil {
+		if err := a.database.InsertMessage(a.ctx, msg); err != nil {
 			log.Printf("insert message failed: %v", err)
 		}
 
@@ -137,7 +142,10 @@ func (a *App) registerEventSubscribers() {
 	})
 
 	a.subscribe(eventbus.TopicPrivateMsgReceived, func(c context.Context, ev eventbus.Event) {
-		payload := ev.Payload.(eventbus.MsgReceivedPayload)
+		payload, ok := ev.Payload.(eventbus.MsgReceivedPayload)
+		if !ok {
+			return
+		}
 
 		encrypted, err := a.crypto.EncryptLocal(payload.Content)
 		if err != nil {
@@ -155,7 +163,7 @@ func (a *App) registerEventSubscribers() {
 			Type:       payload.Type,
 			CreatedAt:  ev.Timestamp,
 		}
-		if err := a.database.InsertMessage(context.Background(), msg); err != nil {
+		if err := a.database.InsertMessage(a.ctx, msg); err != nil {
 			log.Printf("insert private message failed: %v", err)
 		}
 
@@ -221,7 +229,7 @@ func (a *App) JoinTeamWithName(name, secret string) (string, error) {
 		TeamHash:  teamHash,
 		CreatedAt: time.Now(),
 	}
-	if err := a.database.InsertTeam(context.Background(), team); err != nil {
+	if err := a.database.InsertTeam(a.ctx, team); err != nil {
 		return "", fmt.Errorf("failed to persist team: %w", err)
 	}
 
@@ -234,7 +242,7 @@ func (a *App) JoinTeamWithName(name, secret string) (string, error) {
 }
 
 func (a *App) LeaveTeam(teamID string) error {
-	if err := a.database.DeleteTeam(context.Background(), teamID); err != nil {
+	if err := a.database.DeleteTeam(a.ctx, teamID); err != nil {
 		return fmt.Errorf("failed to delete team: %w", err)
 	}
 	a.crypto.RemoveTeamKey(teamID)
@@ -256,15 +264,15 @@ func (a *App) CreateChannel(name string) error {
 		CreatedBy: myPub,
 		CreatedAt: time.Now(),
 	}
-	if err := a.database.CreateChannel(context.Background(), ch); err != nil {
+	if err := a.database.CreateChannel(a.ctx, ch); err != nil {
 		return fmt.Errorf("failed to create channel: %w", err)
 	}
-	return a.database.AddChannelMember(context.Background(), channelID, myPub)
+	return a.database.AddChannelMember(a.ctx, channelID, myPub)
 }
 
 func (a *App) ListChannels() ([]map[string]interface{}, error) {
 	activeTeam := a.crypto.GetActiveTeam()
-	channels, err := a.database.ListChannelsByTeam(context.Background(), activeTeam)
+	channels, err := a.database.ListChannelsByTeam(a.ctx, activeTeam)
 	if err != nil {
 		return nil, err
 	}
@@ -283,16 +291,16 @@ func (a *App) ListChannels() ([]map[string]interface{}, error) {
 
 func (a *App) JoinChannel(channelID string) error {
 	myPub := a.crypto.GetPublicKeyBase64()
-	return a.database.AddChannelMember(context.Background(), channelID, myPub)
+	return a.database.AddChannelMember(a.ctx, channelID, myPub)
 }
 
 func (a *App) LeaveChannel(channelID string) error {
 	myPub := a.crypto.GetPublicKeyBase64()
-	return a.database.RemoveChannelMember(context.Background(), channelID, myPub)
+	return a.database.RemoveChannelMember(a.ctx, channelID, myPub)
 }
 
 func (a *App) ListTeams() ([]map[string]interface{}, error) {
-	teams, err := a.database.ListTeams(context.Background())
+	teams, err := a.database.ListTeams(a.ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -324,14 +332,17 @@ func (a *App) sendMessageWith(text string, receiverID string, channelID string, 
 	if err != nil {
 		return err
 	}
-	if err := a.database.InsertMessage(context.Background(), &db.Message{
+	if err := a.database.InsertMessage(a.ctx, &db.Message{
 		ID: uuid.New().String(), HLC: hlc, SenderID: myPub, Content: enc, ReceiverID: receiverID, TeamID: a.crypto.GetActiveTeam(), ChannelID: channelID, CreatedAt: time.Now(),
 	}); err != nil {
 		log.Printf("insert message failed: %v", err)
 	}
 
 	netMsg := eventbus.MsgReceivedPayload{HLC: hlc, SenderID: myPub, Content: raw}
-	jsonBytes, _ := json.Marshal(netMsg)
+	jsonBytes, err := json.Marshal(netMsg)
+	if err != nil {
+		return err
+	}
 	encrypted, err := encryptFn(jsonBytes)
 	if err != nil {
 		return err
@@ -381,7 +392,25 @@ func (a *App) GetDirectoryChildren(path string) (interface{}, error) {
 	if err := a.requireFileEngine(); err != nil {
 		return nil, err
 	}
-	return a.fileEng.GetDirectoryChildren(path)
+
+	if path == "" {
+		return nil, errors.New("path is empty")
+	}
+
+	cleanPath := filepath.Clean(path)
+	sharedRoots := a.fileEng.GetSharedRoots()
+	allowed := false
+	for _, root := range sharedRoots {
+		if strings.HasPrefix(cleanPath, root+string(os.PathSeparator)) || cleanPath == root {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, fmt.Errorf("path %s is not within any shared directory", cleanPath)
+	}
+
+	return a.fileEng.GetDirectoryChildren(cleanPath)
 }
 
 // GetRemoteDirectoryChildren 浏览远程对等节点的共享目录
@@ -389,7 +418,14 @@ func (a *App) GetRemoteDirectoryChildren(targetPubKey, path string) ([]map[strin
 	if a.netEng == nil {
 		return nil, errors.New("network engine not available")
 	}
-	entries, err := a.netEng.BrowseRemoteDirectory(targetPubKey, path)
+	if targetPubKey == "" {
+		return nil, errors.New("target public key is required")
+	}
+
+	// Clean the path to prevent traversal patterns.
+	cleanPath := filepath.Clean(path)
+
+	entries, err := a.netEng.BrowseRemoteDirectory(targetPubKey, cleanPath)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +455,7 @@ func (a *App) CreateShareGroup(name string) (string, error) {
 		CreatedBy: myPub,
 		CreatedAt: time.Now(),
 	}
-	if err := a.database.CreateShareGroup(context.Background(), sg); err != nil {
+	if err := a.database.CreateShareGroup(a.ctx, sg); err != nil {
 		return "", fmt.Errorf("failed to create share group: %w", err)
 	}
 	return groupID, nil
@@ -427,7 +463,7 @@ func (a *App) CreateShareGroup(name string) (string, error) {
 
 func (a *App) ListShareGroups() ([]map[string]interface{}, error) {
 	activeTeam := a.crypto.GetActiveTeam()
-	groups, err := a.database.ListShareGroupsByTeam(context.Background(), activeTeam)
+	groups, err := a.database.ListShareGroupsByTeam(a.ctx, activeTeam)
 	if err != nil {
 		return nil, err
 	}
@@ -445,19 +481,19 @@ func (a *App) ListShareGroups() ([]map[string]interface{}, error) {
 }
 
 func (a *App) AddDirectoryToShareGroup(groupID, dirPath string) error {
-	return a.database.AddDirectoryToShareGroup(context.Background(), groupID, dirPath)
+	return a.database.AddDirectoryToShareGroup(a.ctx, groupID, dirPath)
 }
 
 func (a *App) RemoveDirectoryFromShareGroup(groupID, dirPath string) error {
-	return a.database.RemoveDirectoryFromShareGroup(context.Background(), groupID, dirPath)
+	return a.database.RemoveDirectoryFromShareGroup(a.ctx, groupID, dirPath)
 }
 
 func (a *App) DeleteShareGroup(groupID string) error {
-	return a.database.DeleteShareGroup(context.Background(), groupID)
+	return a.database.DeleteShareGroup(a.ctx, groupID)
 }
 
 func (a *App) GetShareGroupDirs(groupID string) ([]map[string]interface{}, error) {
-	dirs, err := a.database.ListShareGroupDirs(context.Background(), groupID)
+	dirs, err := a.database.ListShareGroupDirs(a.ctx, groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -484,9 +520,9 @@ func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, err
 	var msgs []*db.Message
 	var err error
 	if activeTeam != "" {
-		msgs, err = a.database.GetRecentMessagesByTeam(context.Background(), activeTeam, limit, offset)
+		msgs, err = a.database.GetRecentMessagesByTeam(a.ctx, activeTeam, limit, offset)
 	} else {
-		msgs, err = a.database.GetRecentMessages(context.Background(), limit, offset)
+		msgs, err = a.database.GetRecentMessages(a.ctx, limit, offset)
 	}
 	if err != nil {
 		return nil, err
@@ -509,7 +545,7 @@ func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, err
 }
 
 func (a *App) GetRecentHistoryByChannel(channelID string, limit, offset int) ([]map[string]interface{}, error) {
-	msgs, err := a.database.GetRecentMessagesByChannel(context.Background(), channelID, limit, offset)
+	msgs, err := a.database.GetRecentMessagesByChannel(a.ctx, channelID, limit, offset)
 	if err != nil {
 		return nil, err
 	}

@@ -7,39 +7,39 @@
         :class="mode === 'local' ? 'badge badge-green' : 'badge'"
         style="margin-right:8px;cursor:pointer"
       >
-        Local
+        {{ $t('file.local') }}
       </button>
       <button
         @click="mode = 'remote'"
         :class="mode === 'remote' ? 'badge badge-green' : 'badge'"
         style="cursor:pointer"
       >
-        Remote
+        {{ $t('file.remote') }}
       </button>
     </div>
 
     <!-- LOCAL mode -->
     <div v-if="mode === 'local'">
       <!-- Share directory -->
-      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Share a Directory</h3>
+      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">{{ $t('file.shareDirectory') }}</h3>
       <div class="row">
-        <input v-model="sharePath" placeholder="/absolute/path/to/dir" style="flex:1" />
-        <button @click="doShare" :disabled="!sharePath || loading">Share</button>
+        <input v-model="sharePath" :placeholder="$t('file.sharePath')" style="flex:1" />
+        <button @click="doShare" :disabled="!sharePath || loading">{{ $t('file.share') }}</button>
       </div>
 
       <!-- Shared directories list -->
       <div v-if="sharedDirs.length" class="list" style="margin-bottom:12px">
         <div class="list-item" v-for="d in sharedDirs" :key="d">
           <span style="flex:1;font-size:12px">{{ d }}</span>
-          <button @click="doUnshare(d)" style="font-size:11px;padding:2px 8px">Unshare</button>
+          <button @click="doUnshare(d)" style="font-size:11px;padding:2px 8px">{{ $t('file.unshare') }}</button>
         </div>
       </div>
 
       <!-- Local directory browser -->
-      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Browse Local Files</h3>
+      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">{{ $t('file.browseLocal') }}</h3>
       <div v-if="browsePath" style="font-size:12px;margin-bottom:8px;color:#8a8aaf">
-        Path: {{ browsePath }}
-        <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px;margin-left:8px">Up</button>
+        {{ $t('file.path') }}: {{ browsePath }}
+        <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px;margin-left:8px">{{ $t('file.up') }}</button>
       </div>
       <div class="list" v-if="dirEntries.length">
         <div class="list-item" v-for="entry in dirEntries" :key="entry.path">
@@ -53,28 +53,28 @@
         </div>
       </div>
       <div v-else-if="!loading" style="font-size:13px;color:#8a8aaf;margin-top:8px">
-        Click a shared directory above to browse
+        {{ $t('file.clickToBrowse') }}
       </div>
     </div>
 
     <!-- REMOTE mode -->
     <div v-if="mode === 'remote'">
       <!-- Peer selector -->
-      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">Select Peer</h3>
+      <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">{{ $t('file.selectPeer') }}</h3>
       <div class="row">
         <select v-model="browsePeer" style="flex:1">
-          <option value="">-- Select peer --</option>
+          <option value="">{{ $t('chat.selectPeer') }}</option>
           <option v-for="p in peers" :key="p.pubkey" :value="p.pubkey">
             {{ p.ip }} ({{ p.pubkey.slice(0, 12) }}...)
           </option>
         </select>
-        <button @click="doBrowse" :disabled="!browsePeer || loading">Browse</button>
+        <button @click="doBrowse" :disabled="!browsePeer || loading">{{ $t('file.browse') }}</button>
       </div>
 
       <!-- Path breadcrumb -->
       <div v-if="browsePath !== ''" style="font-size:12px;margin:12px 0 8px;color:#8a8aaf">
-        Path: {{ browsePath || '/' }}
-        <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px;margin-left:8px">Up</button>
+        {{ $t('file.path') }}: {{ browsePath || '/' }}
+        <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px;margin-left:8px">{{ $t('file.up') }}</button>
       </div>
 
       <!-- Remote directory listing -->
@@ -92,20 +92,20 @@
             @click="doDownload(entry)"
             style="font-size:11px;padding:2px 8px"
           >
-            Download
+            {{ $t('file.download') }}
           </button>
         </div>
       </div>
       <div v-else-if="browsePeer && !loading" style="font-size:13px;color:#8a8aaf;margin-top:8px">
-        Empty directory or unable to browse
+        {{ $t('file.emptyDir') }}
       </div>
 
       <!-- Download form -->
       <div v-if="downloadTarget" style="margin-top:16px;padding:12px;background:#0f3460;border-radius:6px">
-        <h3 style="font-size:14px;margin:0 0 8px 0;color:#aaa">Download: {{ downloadTarget.name }}</h3>
+        <h3 style="font-size:14px;margin:0 0 8px 0;color:#aaa">{{ $t('file.downloading') }}: {{ downloadTarget.name }}</h3>
         <div class="row">
-          <input v-model="localSavePath" placeholder="Local save path" style="flex:1" />
-          <button @click="doStartDownload" :disabled="!localSavePath || loading">Start Download</button>
+          <input v-model="localSavePath" :placeholder="$t('file.localSavePath')" style="flex:1" />
+          <button @click="doStartDownload" :disabled="!localSavePath || loading">{{ $t('file.startDownload') }}</button>
         </div>
       </div>
     </div>
@@ -116,7 +116,10 @@
 
 <script setup>
 import { ref, computed, inject } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
+
+const { t } = useI18n()
 
 const {
   shareDirectory,
@@ -158,7 +161,7 @@ async function doShare() {
   try {
     await shareDirectory(sharePath.value)
     sharedDirs.value.push(sharePath.value)
-    successMsg.value = `Shared: ${sharePath.value}`
+    successMsg.value = t('file.shared') + `: ${sharePath.value}`
     sharePath.value = ''
   } catch (e) {
     errorMsg.value = e.toString()
@@ -173,7 +176,7 @@ async function doUnshare(dir) {
   try {
     await unshareDirectory(dir)
     sharedDirs.value = sharedDirs.value.filter(d => d !== dir)
-    successMsg.value = `Unshared: ${dir}`
+    successMsg.value = t('file.unshared') + `: ${dir}`
   } catch (e) {
     errorMsg.value = e.toString()
   } finally {
@@ -261,7 +264,7 @@ async function doStartDownload() {
   const vpath = downloadTarget.value.path
   try {
     await startDownload(browsePeer.value, vpath, localSavePath.value)
-    successMsg.value = `Download started: ${downloadTarget.value.name}`
+    successMsg.value = t('file.downloadStarted') + `: ${downloadTarget.value.name}`
     downloadTarget.value = null
     localSavePath.value = ''
   } catch (e) {

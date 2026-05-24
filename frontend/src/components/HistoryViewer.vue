@@ -1,13 +1,13 @@
 <template>
     <div class="row">
-      <label style="font-size:13px">Limit:</label>
+      <label style="font-size:13px">{{ $t('history.limit') }}:</label>
       <input v-model.number="limit" type="number" min="1" max="200" style="width:80px" />
-      <label style="font-size:13px">Offset:</label>
+      <label style="font-size:13px">{{ $t('history.offset') }}:</label>
       <input v-model.number="offset" type="number" min="0" style="width:80px" />
-      <button @click="doFetch" :disabled="loading">Fetch</button>
+      <button @click="doFetch" :disabled="loading">{{ $t('history.fetch') }}</button>
     </div>
     <div class="list" style="max-height:400px">
-      <div v-if="messages.length === 0 && !loading" style="font-size:13px;color:#8a8aaf">No messages fetched yet</div>
+      <div v-if="messages.length === 0 && !loading" style="font-size:13px;color:#8a8aaf">{{ $t('history.noMessages') }}</div>
       <div class="list-item" v-for="msg in messages" :key="msg.id">
         <div style="display:flex;gap:8px;font-size:11px;color:#8a8aaf;margin-bottom:2px">
           <span>{{ msg.sender }}</span>

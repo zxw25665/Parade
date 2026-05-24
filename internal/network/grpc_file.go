@@ -125,7 +125,20 @@ func (s *FileService) DownloadFile(req *pb.FileRequest, stream pb.FileTransferSe
 		return errors.New("offset must be >= 0")
 	}
 
-	info, err := s.fileEngine.GetFileMeta(req.GetFilePath())
+	cleanPath := filepath.Clean(req.GetFilePath())
+	sharedRoots := s.fileEngine.GetSharedRoots()
+	allowed := false
+	for _, root := range sharedRoots {
+		if strings.HasPrefix(cleanPath, root+string(os.PathSeparator)) || cleanPath == root {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return status.Error(codes.PermissionDenied, "path not in shared directories")
+	}
+
+	info, err := s.fileEngine.GetFileMeta(cleanPath)
 	if err != nil {
 		return err
 	}
@@ -133,30 +146,30 @@ func (s *FileService) DownloadFile(req *pb.FileRequest, stream pb.FileTransferSe
 
 	offset := req.GetOffset()
 	for {
-		chunk, err := s.fileEngine.GetChunk(req.GetFilePath(), offset)
+		chunk, err := s.fileEngine.GetChunk(cleanPath, offset)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				// 最后一包EOF通知（可选）
-				return stream.Send(&pb.FileChunk{
-					TaskId:    req.GetTaskId(),
-					PeerId:    s.localPeer,
-					FilePath:  req.GetFilePath(),
-					Offset:    offset,
-					TotalSize: totalSize,
-					Eof:       true,
-				})
+			// 最后一包EOF通知（可选）
+			return stream.Send(&pb.FileChunk{
+				TaskId:    req.GetTaskId(),
+				PeerId:    s.localPeer,
+				FilePath:  cleanPath,
+				Offset:    offset,
+				TotalSize: totalSize,
+				Eof:       true,
+			})
 			}
 			return err
 		}
 
-		resp := &pb.FileChunk{
-			TaskId:    req.GetTaskId(),
-			PeerId:    s.localPeer,
-			FilePath:  req.GetFilePath(),
-			Offset:    offset,
-			Data:      chunk,
-			TotalSize: totalSize,
-		}
+	resp := &pb.FileChunk{
+		TaskId:    req.GetTaskId(),
+		PeerId:    s.localPeer,
+		FilePath:  cleanPath,
+		Offset:    offset,
+		Data:      chunk,
+		TotalSize: totalSize,
+	}
 		if err := stream.Send(resp); err != nil {
 			return err
 		}
@@ -189,7 +202,7 @@ func (s *FileService) BrowseDirectory(ctx context.Context, req *pb.BrowseRequest
 	sharedRoots := s.fileEngine.GetSharedRoots()
 	allowed := false
 	for _, root := range sharedRoots {
-		if strings.HasPrefix(absPath, root) {
+		if strings.HasPrefix(absPath, root+string(os.PathSeparator)) || absPath == root {
 			allowed = true
 			break
 		}
