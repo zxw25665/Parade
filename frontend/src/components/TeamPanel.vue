@@ -1,29 +1,29 @@
 <template>
-    <div v-if="!store.loggedIn" class="error" style="margin-bottom:8px">You must login in Identity page first</div>
+    <div v-if="!store.loggedIn" class="error" style="margin-bottom:8px">{{ $t('team.mustLogin') }}</div>
     <div v-else>
       <div class="row" style="margin-bottom:12px">
-        <input v-model="teamName" placeholder="Team name (optional)" style="flex:1" />
-        <input v-model="teamSecret" type="password" placeholder="Team secret" style="flex:1" @keyup.enter="doJoin" />
-        <button @click="doJoin" :disabled="!teamSecret || loading">Join / Create Team</button>
+        <input v-model="teamName" :placeholder="$t('team.teamNameOptional')" style="flex:1" />
+        <input v-model="teamSecret" type="password" :placeholder="$t('team.teamSecret')" style="flex:1" @keyup.enter="doJoin" />
+        <button @click="doJoin" :disabled="!teamSecret || loading">{{ $t('team.joinCreate') }}</button>
       </div>
 
       <div v-if="store.teams.length > 0">
-        <div style="font-size:13px;color:#8a8aaf;margin-bottom:8px">My Teams</div>
+        <div style="font-size:13px;color:#8a8aaf;margin-bottom:8px">{{ $t('team.myTeams') }}</div>
         <div class="list">
           <div v-for="team in store.teams" :key="team.id" class="list-item" style="justify-content:space-between">
             <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-weight:500">{{ team.name || 'Unnamed Team' }}</span>
-              <span v-if="team.active" class="badge badge-green">Active</span>
+              <span style="font-weight:500">{{ team.name || $t('team.unnamedTeam') }}</span>
+              <span v-if="team.active" class="badge badge-green">{{ $t('team.active') }}</span>
             </div>
             <div style="display:flex;gap:6px">
-              <button v-if="!team.active" @click="doSwitch(team.id)" :disabled="loading" style="font-size:12px;padding:4px 10px">Switch</button>
-              <button @click="doLeave(team.id)" :disabled="loading" style="font-size:12px;padding:4px 10px;background:#e94560">Leave</button>
+              <button v-if="!team.active" @click="doSwitch(team.id)" :disabled="loading" style="font-size:12px;padding:4px 10px">{{ $t('team.switch') }}</button>
+              <button @click="doLeave(team.id)" :disabled="loading" style="font-size:12px;padding:4px 10px;background:#e94560">{{ $t('team.leave') }}</button>
             </div>
           </div>
         </div>
       </div>
       <div v-else style="font-size:13px;color:#8a8aaf">
-        No teams joined yet
+        {{ $t('team.noTeams') }}
       </div>
     </div>
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
@@ -32,8 +32,10 @@
 
 <script setup>
 import { ref, onMounted, inject } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
 
+const { t } = useI18n()
 const { joinTeamWithName, leaveTeam, switchTeam, listTeams, getActiveTeam } = useBackend()
 const store = inject('store')
 
@@ -59,7 +61,7 @@ async function refreshTeams() {
       t.active = t.id === store.activeTeamId
     })
   } catch (e) {
-    errorMsg.value = 'Failed to load teams: ' + e.toString()
+    errorMsg.value = t('team.loadTeamsFailed') + ': ' + e.toString()
   }
 }
 
@@ -69,7 +71,7 @@ async function doJoin() {
   successMsg.value = ''
   try {
     await joinTeamWithName(teamName.value, teamSecret.value)
-    successMsg.value = 'Joined team successfully'
+    successMsg.value = t('team.joinSuccess')
     teamName.value = ''
     teamSecret.value = ''
     await refreshTeams()
@@ -87,7 +89,7 @@ async function doSwitch(teamId) {
   successMsg.value = ''
   try {
     await switchTeam(teamId)
-    successMsg.value = 'Switched team'
+    successMsg.value = t('team.switchSuccess')
     await refreshTeams()
   } catch (e) {
     errorMsg.value = e.toString()
@@ -102,7 +104,7 @@ async function doLeave(teamId) {
   successMsg.value = ''
   try {
     await leaveTeam(teamId)
-    successMsg.value = 'Left team'
+    successMsg.value = t('team.leaveSuccess')
     await refreshTeams()
   } catch (e) {
     errorMsg.value = e.toString()

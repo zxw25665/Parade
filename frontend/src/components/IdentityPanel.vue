@@ -1,24 +1,24 @@
 <template>
 
-    <div v-if="store.hasIdentity === null" class="row">Checking...</div>
+    <div v-if="store.hasIdentity === null" class="row">{{ $t('identity.checking') }}</div>
 
     <div v-else-if="!store.hasIdentity">
       <div class="row">
-        <input v-model="password" type="password" placeholder="Set password" @keyup.enter="doRegister" />
-        <button @click="doRegister" :disabled="!password || loading">Register</button>
+        <input v-model="password" type="password" :placeholder="$t('identity.setPassword')" @keyup.enter="doRegister" />
+        <button @click="doRegister" :disabled="!password || loading">{{ $t('identity.register') }}</button>
       </div>
     </div>
 
     <div v-else-if="!store.loggedIn">
       <div class="row">
-        <input v-model="password" type="password" placeholder="Enter password" @keyup.enter="doLogin" />
-        <button @click="doLogin" :disabled="!password || loading">Login</button>
+        <input v-model="password" type="password" :placeholder="$t('identity.enterPassword')" @keyup.enter="doLogin" />
+        <button @click="doLogin" :disabled="!password || loading">{{ $t('identity.login') }}</button>
       </div>
     </div>
 
     <div v-else>
-      <div class="badge badge-green" style="display:inline-block;margin-bottom:8px">Logged In</div>
-      <div style="font-size:12px;word-break:break-all">PubKey: {{ store.pubkey }}</div>
+      <div class="badge badge-green" style="display:inline-block;margin-bottom:8px">{{ $t('identity.loggedIn') }}</div>
+      <div style="font-size:12px;word-break:break-all">{{ $t('identity.pubKey') }}: {{ store.pubkey }}</div>
     </div>
 
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
@@ -27,8 +27,10 @@
 
 <script setup>
 import { ref, onMounted, inject } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
 
+const { t } = useI18n()
 const { checkHasIdentity, register, login } = useBackend()
 const store = inject('store')
 
@@ -50,7 +52,7 @@ async function doRegister() {
   loading.value = true; errorMsg.value = ''; successMsg.value = ''
   try {
     await register(password.value)
-    successMsg.value = 'Identity created. Now login.'
+    successMsg.value = t('identity.registerSuccess')
     store.hasIdentity = true
     password.value = ''
   } catch (e) {
@@ -66,7 +68,7 @@ async function doLogin() {
     await login(password.value)
     store.loggedIn = true
     store.pubkey = 'connected'
-    successMsg.value = 'Logged in successfully'
+    successMsg.value = t('identity.loginSuccess')
     password.value = ''
   } catch (e) {
     errorMsg.value = e.toString()

@@ -412,6 +412,14 @@ func errorsIsPathNotFound(err error) bool {
 	return err != nil && os.IsNotExist(err)
 }
 
+// IsPathWithinRoot checks whether path is equal to root or a descendant of root
+// without allowing directory traversal via prefix collision (e.g., /tmp/shared_etc
+// would incorrectly match root=/tmp/shared with a plain strings.HasPrefix check).
+func IsPathWithinRoot(path, root string) bool {
+	return strings.HasPrefix(path, root+string(os.PathSeparator)) || path == root
+}
+
+// normalizeDir 校验并规范化目录路径。
 func normalizeDir(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("directory path is empty")

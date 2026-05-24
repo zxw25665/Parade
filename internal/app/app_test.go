@@ -51,6 +51,7 @@ func (m *MockFile) GetVirtualTree(p string) (interface{}, error) { return nil, n
 func (m *MockFile) ShareDirectory(p string) error { return nil }
 func (m *MockFile) UnshareDirectory(p string) error { return nil }
 func (m *MockFile) GetDirectoryChildren(p string) (interface{}, error) { return nil, nil }
+func (m *MockFile) GetSharedRoots() []string { return nil }
 
 type MockUI struct {
 	EventName string
