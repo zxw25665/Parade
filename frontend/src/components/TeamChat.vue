@@ -2,18 +2,18 @@
 
     <div class="row" style="margin-bottom: 12px;">
       <select v-model="activeChannelId" style="flex: 1;">
-        <option value="">Team (General)</option>
+        <option value="">{{ $t('chat.teamGeneral') }}</option>
         <option v-for="ch in store.channels" :key="ch.id" :value="ch.id">{{ ch.name }}</option>
       </select>
     </div>
 
     <div class="row" style="margin-bottom: 12px;">
-      <input v-model="newChannelName" placeholder="New channel name..." style="flex: 1;" />
-      <button @click="doCreateChannel" :disabled="!newChannelName.trim() || creatingChannel">Create</button>
+      <input v-model="newChannelName" :placeholder="$t('chat.newChannelName')" style="flex: 1;" />
+      <button @click="doCreateChannel" :disabled="!newChannelName.trim() || creatingChannel">{{ $t('chat.create') }}</button>
     </div>
 
     <div class="list" ref="msgList">
-      <div v-if="filteredMessages.length === 0" style="font-size:13px;color:#8a8aaf">No messages yet</div>
+      <div v-if="filteredMessages.length === 0" style="font-size:13px;color:#8a8aaf">{{ $t('chat.noMessages') }}</div>
       <div class="list-item" v-for="msg in filteredMessages" :key="msg.id" :style="{ color: msg.direction === 'send' ? '#4ecca3' : '#e0e0e0' }">
         <div style="font-size:11px;color:#8a8aaf">{{ msg.sender }} · {{ msg.hlc }}</div>
         <div>{{ msg.content }}</div>
@@ -21,8 +21,8 @@
     </div>
 
     <div class="row" style="margin-top:12px">
-      <input v-model="text" placeholder="Type a message..." @keyup.enter="doSend" style="flex:1" />
-      <button @click="doSend" :disabled="!text.trim() || loading">Send</button>
+      <input v-model="text" :placeholder="$t('chat.typeMessage')" @keyup.enter="doSend" style="flex:1" />
+      <button @click="doSend" :disabled="!text.trim() || loading">{{ $t('chat.send') }}</button>
     </div>
 
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
@@ -30,7 +30,10 @@
 
 <script setup>
 import { ref, computed, inject, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
+
+const { t } = useI18n()
 
 const {
   sendTeamChat,

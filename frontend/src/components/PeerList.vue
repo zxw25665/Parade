@@ -2,10 +2,10 @@
 
     <!-- Manual connect -->
     <div class="row">
-      <input v-model="connectIP" placeholder="192.168.x.x" @keyup.enter="doConnect" style="flex:1" />
-      <button @click="doConnect" :disabled="!connectIP || connecting">Connect</button>
-      <button @click="doRefresh" :disabled="connecting">Refresh</button>
-      <span style="font-size:12px">{{ peers.length }} peer(s)</span>
+      <input v-model="connectIP" :placeholder="$t('peer.connectPlaceholder')" @keyup.enter="doConnect" style="flex:1" />
+      <button @click="doConnect" :disabled="!connectIP || connecting">{{ $t('peer.connect') }}</button>
+      <button @click="doRefresh" :disabled="connecting">{{ $t('peer.refresh') }}</button>
+      <span style="font-size:12px">{{ $t('peer.peerCount', { count: peers.length }) }}</span>
     </div>
     <div v-if="connectError" class="error">{{ connectError }}</div>
 
@@ -19,7 +19,7 @@
           <span style="font-size:11px;word-break:break-all;margin-left:8px">
             {{ p.shortPubkey }}
           </span>
-          <span v-if="p.source === 'mDNS'" style="font-size:10px;color:#8a8aaf;margin-left:8px">mDNS</span>
+          <span v-if="p.source === 'mDNS'" style="font-size:10px;color:#8a8aaf;margin-left:8px">{{ $t('peer.mdns') }}</span>
         </div>
 
         <!-- Test result panel -->
@@ -33,20 +33,22 @@
           </div>
         </div>
         <div v-else-if="p.expanded" style="font-size:11px;color:#8a8aaf;padding:6px 8px">
-          尚未测试
+          {{ $t('peer.notTested') }}
         </div>
       </div>
     </div>
     <div v-else style="font-size:13px;color:#8a8aaf;margin-top:8px">
-      No peers. Enter an IP above and click Connect.
+      {{ $t('peer.noPeers') }}
     </div>
 </template>
 
 <script setup>
 import { ref, computed, inject } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
 import { useStore } from '../composables/useStore.js'
 
+const { t } = useI18n()
 const { getPeers, connectToPeer } = useBackend()
 const eventsState = inject('events')
 const store = useStore()
@@ -102,10 +104,10 @@ function toggleExpanded(p) {
 
 function phases(test) {
   return [
-    { key: 'phase1', success: test.phase1?.success, label: test.phase1?.label || '正常', error: test.phase1?.error || '' },
-    { key: 'phase2', success: test.phase2?.success, label: test.phase2?.label || '队伍相同', error: test.phase2?.error || '' },
-    { key: 'phase3Send', success: test.phase3Send?.success, label: test.phase3Send?.label || '消息发送', error: test.phase3Send?.error || '' },
-    { key: 'phase3Recv', success: test.phase3Recv?.success, label: test.phase3Recv?.label || '收到消息', error: test.phase3Recv?.error || '' }
+    { key: 'phase1', success: test.phase1?.success, label: test.phase1?.label || t('peer.phaseNormal'), error: test.phase1?.error || '' },
+    { key: 'phase2', success: test.phase2?.success, label: test.phase2?.label || t('peer.phaseSameTeam'), error: test.phase2?.error || '' },
+    { key: 'phase3Send', success: test.phase3Send?.success, label: test.phase3Send?.label || t('peer.phaseMsgSent'), error: test.phase3Send?.error || '' },
+    { key: 'phase3Recv', success: test.phase3Recv?.success, label: test.phase3Recv?.label || t('peer.phaseMsgReceived'), error: test.phase3Recv?.error || '' }
   ]
 }
 
@@ -118,7 +120,7 @@ async function doConnect() {
     const result = await connectToPeer(ip)
     store.peerTests[ip] = result
   } catch (e) {
-    connectError.value = 'Connect failed: ' + e.toString()
+    connectError.value = t('peer.connectFailed') + ': ' + e.toString()
   } finally {
     connecting.value = false
   }
@@ -134,7 +136,7 @@ async function doRefresh() {
       }))
     }
   } catch (e) {
-    connectError.value = 'Refresh failed: ' + e.toString()
+    connectError.value = t('peer.refreshFailed') + ': ' + e.toString()
   }
 }
 </script>

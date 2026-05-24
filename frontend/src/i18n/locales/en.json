@@ -1,0 +1,115 @@
+{
+  "app": {
+    "title": "Parade",
+    "subtitle": "游行"
+  },
+  "panel": {
+    "identity": "Identity",
+    "team": "Team",
+    "peers": "Peers",
+    "files": "Files",
+    "downloads": "Downloads",
+    "history": "History",
+    "collapseLeft": "Collapse left panel",
+    "expandLeft": "Expand left panel",
+    "collapseRight": "Collapse right panel",
+    "expandRight": "Expand right panel"
+  },
+  "identity": {
+    "checking": "Checking...",
+    "setPassword": "Set password",
+    "enterPassword": "Enter password",
+    "register": "Register",
+    "login": "Login",
+    "loggedIn": "Logged In",
+    "pubKey": "PubKey",
+    "registerSuccess": "Identity created. Now login.",
+    "loginSuccess": "Logged in successfully"
+  },
+  "team": {
+    "mustLogin": "You must login in Identity page first",
+    "teamNameOptional": "Team name (optional)",
+    "teamSecret": "Team secret",
+    "joinCreate": "Join / Create Team",
+    "myTeams": "My Teams",
+    "unnamedTeam": "Unnamed Team",
+    "active": "Active",
+    "switch": "Switch",
+    "leave": "Leave",
+    "noTeams": "No teams joined yet",
+    "joinSuccess": "Joined team successfully",
+    "switchSuccess": "Switched team",
+    "leaveSuccess": "Left team",
+    "loadTeamsFailed": "Failed to load teams"
+  },
+  "peer": {
+    "connectPlaceholder": "192.168.x.x",
+    "connect": "Connect",
+    "refresh": "Refresh",
+    "peerCount": "{count} peer(s)",
+    "noPeers": "No peers. Enter an IP above and click Connect.",
+    "mdns": "mDNS",
+    "connectFailed": "Connect failed",
+    "refreshFailed": "Refresh failed",
+    "phaseNormal": "Normal",
+    "phaseSameTeam": "Same team",
+    "phaseMsgSent": "Message sent",
+    "phaseMsgReceived": "Message received",
+    "notTested": "Not yet tested",
+    "invalidLogin": "Not logged in: no identity key loaded, please Login in Identity page first",
+    "engineNotStarted": "Network engine not started: please Join Team first"
+  },
+  "chat": {
+    "teamChat": "Team Chat",
+    "privateChat": "Private Chat",
+    "teamGeneral": "Team (General)",
+    "newChannelName": "New channel name...",
+    "create": "Create",
+    "noMessages": "No messages yet",
+    "typeMessage": "Type a message...",
+    "typePrivate": "Type a private message...",
+    "send": "Send",
+    "selectPeer": "-- Select peer --",
+    "me": "me"
+  },
+  "file": {
+    "local": "Local",
+    "remote": "Remote",
+    "shareDirectory": "Share a Directory",
+    "sharePath": "/absolute/path/to/dir",
+    "share": "Share",
+    "unshare": "Unshare",
+    "browseLocal": "Browse Local Files",
+    "path": "Path",
+    "up": "Up",
+    "clickToBrowse": "Click a shared directory above to browse",
+    "selectPeer": "Select Peer",
+    "browse": "Browse",
+    "download": "Download",
+    "emptyDir": "Empty directory or unable to browse",
+    "localSavePath": "Local save path",
+    "startDownload": "Start Download",
+    "downloading": "Download",
+    "shared": "Shared",
+    "unshared": "Unshared",
+    "downloadStarted": "Download started"
+  },
+  "downloads": {
+    "active": "Active",
+    "noActive": "No active downloads",
+    "completed": "Completed",
+    "noCompleted": "No completed downloads",
+    "done": "done",
+    "unknown": "unknown"
+  },
+  "history": {
+    "limit": "Limit",
+    "offset": "Offset",
+    "fetch": "Fetch",
+    "noMessages": "No messages fetched yet",
+    "messageCorrupted": "[message corrupted]"
+  },
+  "lang": {
+    "toggle": "中 / EN"
+  }
+}

@@ -5,12 +5,12 @@
         class="tab-btn"
         :class="{ active: activeTab === 'team' }"
         @click="activeTab = 'team'"
-      >Team Chat</button>
+      >{{ $t('chat.teamChat') }}</button>
       <button
         class="tab-btn"
         :class="{ active: activeTab === 'private' }"
         @click="activeTab = 'private'"
-      >Private Chat</button>
+      >{{ $t('chat.privateChat') }}</button>
     </div>
     <div class="chat-content">
       <TeamChat v-if="activeTab === 'team'" />
