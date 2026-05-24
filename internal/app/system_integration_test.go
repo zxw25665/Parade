@@ -52,6 +52,7 @@ func (f *IntegrationMockFile) GetVirtualTree(p string) (interface{}, error) { re
 func (f *IntegrationMockFile) ShareDirectory(p string) error { return nil }
 func (f *IntegrationMockFile) UnshareDirectory(p string) error { return nil }
 func (f *IntegrationMockFile) GetDirectoryChildren(p string) (interface{}, error) { return nil, nil }
+func (f *IntegrationMockFile) GetSharedRoots() []string { return nil }
 
 type IntegrationMockUI struct {
 	LastEvent string

@@ -203,7 +203,11 @@ func (db *sqliteDB) migrate() error {
 	row := db.conn.QueryRow(`SELECT value FROM schema_meta WHERE key = 'version'`)
 	var versionStr string
 	if err := row.Scan(&versionStr); err == nil {
-		currentVersion, _ = strconv.Atoi(versionStr)
+		if v, err := strconv.Atoi(versionStr); err == nil {
+			currentVersion = v
+		} else if versionStr != "" {
+			return fmt.Errorf("invalid schema version %q: %w", versionStr, err)
+		}
 	}
 
 	for _, m := range migrations {
@@ -250,7 +254,12 @@ func (db *sqliteDB) RunInTx(ctx context.Context, fn func(tx DBTx) error) error {
 		return err
 	}
 
-	return sqlTx.Commit() // 成功则一并提交
+	err = sqlTx.Commit()
+	if err != nil {
+		sqlTx.Rollback()
+		return err
+	}
+	return nil
 }
 
 type dbTxWrapper struct {
@@ -285,6 +294,9 @@ func (db *sqliteDB) GetMessagesSinceHLC(ctx context.Context, hlc string, limit i
 		}
 		msgs = append(msgs, msg)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return msgs, nil
 }
 
@@ -304,6 +316,9 @@ func (db *sqliteDB) GetRecentMessages(ctx context.Context, limit int, offset int
 			return nil, err
 		}
 		msgs = append(msgs, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return msgs, nil
 }
@@ -325,6 +340,9 @@ func (db *sqliteDB) GetRecentMessagesByTeam(ctx context.Context, teamID string, 
 		}
 		msgs = append(msgs, msg)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return msgs, nil
 }
 
@@ -345,6 +363,9 @@ func (db *sqliteDB) GetRecentMessagesByChannel(ctx context.Context, channelID st
 		}
 		msgs = append(msgs, msg)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return msgs, nil
 }
 
@@ -364,6 +385,9 @@ func (db *sqliteDB) GetMessagesSinceHLCByTeam(ctx context.Context, teamID string
 			return nil, err
 		}
 		msgs = append(msgs, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return msgs, nil
 }
@@ -444,6 +468,9 @@ func (db *sqliteDB) ListTeams(ctx context.Context) ([]*Team, error) {
 		}
 		teams = append(teams, t)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return teams, nil
 }
 
@@ -483,6 +510,9 @@ func (db *sqliteDB) ListSharedDirectories(ctx context.Context) ([]*SharedDirecto
 		}
 		dirs = append(dirs, d)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return dirs, nil
 }
 
@@ -520,15 +550,26 @@ func (db *sqliteDB) ListShareGroupsByTeam(ctx context.Context, teamID string) ([
 		}
 		groups = append(groups, sg)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return groups, nil
 }
 
 func (db *sqliteDB) DeleteShareGroup(ctx context.Context, id string) error {
-	if _, err := db.conn.ExecContext(ctx, `DELETE FROM share_group_dirs WHERE group_id = ?`, id); err != nil {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := db.conn.ExecContext(ctx, `DELETE FROM share_groups WHERE id = ?`, id)
-	return err
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM share_group_dirs WHERE group_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM share_groups WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *sqliteDB) AddDirectoryToShareGroup(ctx context.Context, groupID, dirPath string) error {
@@ -557,6 +598,9 @@ func (db *sqliteDB) ListShareGroupDirs(ctx context.Context, groupID string) ([]*
 			return nil, err
 		}
 		dirs = append(dirs, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return dirs, nil
 }
@@ -597,15 +641,26 @@ func (db *sqliteDB) ListChannelsByTeam(ctx context.Context, teamID string) ([]*C
 		}
 		channels = append(channels, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return channels, nil
 }
 
 func (db *sqliteDB) DeleteChannel(ctx context.Context, id string) error {
-	if _, err := db.conn.ExecContext(ctx, `DELETE FROM channel_members WHERE channel_id = ?`, id); err != nil {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := db.conn.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id)
-	return err
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_members WHERE channel_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *sqliteDB) AddChannelMember(ctx context.Context, channelID, pubkey string) error {
@@ -635,6 +690,9 @@ func (db *sqliteDB) GetChannelMembers(ctx context.Context, channelID string) ([]
 			return nil, err
 		}
 		members = append(members, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return members, nil
 }

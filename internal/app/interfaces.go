@@ -25,6 +25,7 @@ type FileEngine interface {
 	ShareDirectory(absPath string) error
 	UnshareDirectory(absPath string) error
 	GetDirectoryChildren(absPath string) (interface{}, error)
+	GetSharedRoots() []string
 }
 
 // Frontend 定义了后端主动向前端推送消息的接口

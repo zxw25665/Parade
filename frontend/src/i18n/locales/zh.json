@@ -1,0 +1,115 @@
+{
+  "app": {
+    "title": "游行",
+    "subtitle": "Parade"
+  },
+  "panel": {
+    "identity": "身份",
+    "team": "队伍",
+    "peers": "节点",
+    "files": "文件",
+    "downloads": "下载",
+    "history": "历史",
+    "collapseLeft": "收起左侧面板",
+    "expandLeft": "展开左侧面板",
+    "collapseRight": "收起右侧面板",
+    "expandRight": "展开右侧面板"
+  },
+  "identity": {
+    "checking": "检查中...",
+    "setPassword": "设置密码",
+    "enterPassword": "输入密码",
+    "register": "注册",
+    "login": "登录",
+    "loggedIn": "已登录",
+    "pubKey": "公钥",
+    "registerSuccess": "身份已创建，请登录",
+    "loginSuccess": "登录成功"
+  },
+  "team": {
+    "mustLogin": "请先在身份页面登录",
+    "teamNameOptional": "队伍名称（可选）",
+    "teamSecret": "队伍口令",
+    "joinCreate": "加入 / 创建队伍",
+    "myTeams": "我的队伍",
+    "unnamedTeam": "未命名队伍",
+    "active": "当前",
+    "switch": "切换",
+    "leave": "离开",
+    "noTeams": "尚未加入任何队伍",
+    "joinSuccess": "成功加入队伍",
+    "switchSuccess": "已切换队伍",
+    "leaveSuccess": "已离开队伍",
+    "loadTeamsFailed": "加载队伍列表失败"
+  },
+  "peer": {
+    "connectPlaceholder": "192.168.x.x",
+    "connect": "连接",
+    "refresh": "刷新",
+    "peerCount": "{count} 个节点",
+    "noPeers": "没有节点。在上方输入 IP 并点击连接",
+    "mdns": "mDNS",
+    "connectFailed": "连接失败",
+    "refreshFailed": "刷新失败",
+    "phaseNormal": "正常",
+    "phaseSameTeam": "队伍相同",
+    "phaseMsgSent": "消息发送",
+    "phaseMsgReceived": "收到消息",
+    "notTested": "尚未测试",
+    "invalidLogin": "未登录：没有加载身份密钥，请先在身份页面登录",
+    "engineNotStarted": "网络引擎未启动：请先加入队伍"
+  },
+  "chat": {
+    "teamChat": "群聊",
+    "privateChat": "私聊",
+    "teamGeneral": "队伍（通用）",
+    "newChannelName": "新频道名称...",
+    "create": "创建",
+    "noMessages": "暂无消息",
+    "typeMessage": "输入消息...",
+    "typePrivate": "输入私聊消息...",
+    "send": "发送",
+    "selectPeer": "-- 选择节点 --",
+    "me": "我"
+  },
+  "file": {
+    "local": "本地",
+    "remote": "远程",
+    "shareDirectory": "共享目录",
+    "sharePath": "/绝对路径/到/目录",
+    "share": "共享",
+    "unshare": "取消共享",
+    "browseLocal": "浏览本地文件",
+    "path": "路径",
+    "up": "上层",
+    "clickToBrowse": "点击上方共享目录进行浏览",
+    "selectPeer": "选择节点",
+    "browse": "浏览",
+    "download": "下载",
+    "emptyDir": "目录为空或无法浏览",
+    "localSavePath": "本地保存路径",
+    "startDownload": "开始下载",
+    "downloading": "下载",
+    "shared": "已共享",
+    "unshared": "已取消共享",
+    "downloadStarted": "下载已开始"
+  },
+  "downloads": {
+    "active": "进行中",
+    "noActive": "没有进行中的下载",
+    "completed": "已完成",
+    "noCompleted": "没有已完成的下载",
+    "done": "完成",
+    "unknown": "未知"
+  },
+  "history": {
+    "limit": "数量",
+    "offset": "偏移",
+    "fetch": "获取",
+    "noMessages": "暂无获取的消息",
+    "messageCorrupted": "[消息损坏]"
+  },
+  "lang": {
+    "toggle": "EN / 中"
+  }
+}

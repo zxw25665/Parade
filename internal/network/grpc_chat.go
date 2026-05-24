@@ -860,6 +860,9 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 				continue
 			}
 		default: // Type 0 (team) or 99 (test): DecryptTeam only
+			if envelope.Type != 0 && envelope.Type != 99 {
+				fmt.Printf("[chat] warning: unknown envelope type %d\n", envelope.Type)
+			}
 			var err error
 			if envelope.TeamId != "" {
 				plain, err = cs.engine.crypto.DecryptTeamForTeam(envelope.TeamId, envelope.Payload)

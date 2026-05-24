@@ -1,22 +1,22 @@
 <template>
     <div class="row">
       <select v-model="targetPeer" style="flex:1">
-        <option value="">-- Select peer --</option>
+        <option value="">{{ $t('chat.selectPeer') }}</option>
         <option v-for="p in peers" :key="p.pubkey" :value="p.pubkey">
           {{ p.ip }} ({{ p.pubkey.slice(0, 16) }}...)
         </option>
       </select>
     </div>
     <div class="list" style="max-height:250px">
-      <div v-if="messages.length === 0" style="font-size:13px;color:#8a8aaf">No messages yet</div>
+      <div v-if="messages.length === 0" style="font-size:13px;color:#8a8aaf">{{ $t('chat.noMessages') }}</div>
       <div class="list-item" v-for="msg in messages" :key="msg.id" :style="{ color: msg.direction === 'send' ? '#4ecca3' : '#e0e0e0' }">
-        <div style="font-size:11px;color:#8a8aaf">{{ msg.senderId || 'me' }} · {{ msg.hlc }}</div>
+        <div style="font-size:11px;color:#8a8aaf">{{ msg.senderId || $t('chat.me') }} · {{ msg.hlc }}</div>
         <div>{{ msg.content }}</div>
       </div>
     </div>
     <div class="row" style="margin-top:12px">
-      <input v-model="text" placeholder="Type a private message..." @keyup.enter="doSend" style="flex:1" />
-      <button @click="doSend" :disabled="!text || !targetPeer || loading">Send</button>
+      <input v-model="text" :placeholder="$t('chat.typePrivate')" @keyup.enter="doSend" style="flex:1" />
+      <button @click="doSend" :disabled="!text || !targetPeer || loading">{{ $t('chat.send') }}</button>
     </div>
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
 </template>

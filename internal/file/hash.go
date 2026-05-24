@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -129,8 +130,12 @@ func fileFingerprint(file *os.File, size int64) (string, error) {
 		var meta [16]byte
 		binary.LittleEndian.PutUint64(meta[:8], uint64(offset))
 		binary.LittleEndian.PutUint64(meta[8:], uint64(n))
-		_, _ = hash.Write(meta[:])
-		_, _ = hash.Write(buf)
+		if _, err := hash.Write(meta[:]); err != nil {
+			log.Printf("hash write meta at offset %d failed: %v", offset, err)
+		}
+		if _, err := hash.Write(buf); err != nil {
+			log.Printf("hash write buf at offset %d failed: %v", offset, err)
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

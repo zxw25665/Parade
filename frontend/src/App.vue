@@ -2,21 +2,24 @@
   <div class="app-layout">
     <!-- ===== Left Panel: Identity, Team, Peers ===== -->
     <aside class="side-panel left" :class="{ open: leftOpen, collapsed: !leftOpen }">
-      <button class="panel-toggle" @click="leftOpen = !leftOpen" :title="leftOpen ? 'Collapse left panel' : 'Expand left panel'">
+      <button class="panel-toggle" @click="leftOpen = !leftOpen" :title="leftOpen ? $t('panel.collapseLeft') : $t('panel.expandLeft')">
         {{ leftOpen ? '◀' : '▶' }}
       </button>
       <div class="side-panel-inner" v-show="leftOpen">
-        <div class="logo">Parade <span style="font-weight:400;font-size:12px;color:var(--color-text-dim)">游行</span></div>
+        <div class="logo-header">
+          <div class="logo">{{ $t('app.title') }} <span style="font-weight:400;font-size:12px;color:var(--color-text-dim)">{{ $t('app.subtitle') }}</span></div>
+          <LanguageToggle />
+        </div>
 
-        <CollapsibleSection title="Identity" :default-open="true">
+        <CollapsibleSection :title="$t('panel.identity')" :default-open="true">
           <IdentityPanel />
         </CollapsibleSection>
 
-        <CollapsibleSection title="Team" :default-open="true">
+        <CollapsibleSection :title="$t('panel.team')" :default-open="true">
           <TeamPanel />
         </CollapsibleSection>
 
-        <CollapsibleSection title="Peers" :default-open="true">
+        <CollapsibleSection :title="$t('panel.peers')" :default-open="true">
           <PeerList />
         </CollapsibleSection>
       </div>
@@ -29,19 +32,19 @@
 
     <!-- ===== Right Panel: Files, Downloads, History ===== -->
     <aside class="side-panel right" :class="{ open: rightOpen, collapsed: !rightOpen }">
-      <button class="panel-toggle" @click="rightOpen = !rightOpen" :title="rightOpen ? 'Collapse right panel' : 'Expand right panel'">
+      <button class="panel-toggle" @click="rightOpen = !rightOpen" :title="rightOpen ? $t('panel.collapseRight') : $t('panel.expandRight')">
         {{ rightOpen ? '▶' : '◀' }}
       </button>
       <div class="side-panel-inner" v-show="rightOpen">
-        <CollapsibleSection title="Files" :default-open="true">
+        <CollapsibleSection :title="$t('panel.files')" :default-open="true">
           <FileBrowser />
         </CollapsibleSection>
 
-        <CollapsibleSection title="Downloads" :default-open="true">
+        <CollapsibleSection :title="$t('panel.downloads')" :default-open="true">
           <DownloadList />
         </CollapsibleSection>
 
-        <CollapsibleSection title="History" :default-open="false">
+        <CollapsibleSection :title="$t('panel.history')" :default-open="false">
           <HistoryViewer />
         </CollapsibleSection>
       </div>
@@ -62,6 +65,7 @@ import FileBrowser from './components/FileBrowser.vue'
 import DownloadList from './components/DownloadList.vue'
 import HistoryViewer from './components/HistoryViewer.vue'
 import CollapsibleSection from './components/CollapsibleSection.vue'
+import LanguageToggle from './components/LanguageToggle.vue'
 
 const eventsState = useEvents()
 const store = useStore()
@@ -89,4 +93,10 @@ onUnmounted(() => {
 <style scoped>
 /* All layout styles are in index.html global CSS */
 /* Scoped blocks only for App-specific overrides if needed */
+
+.logo-header {
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+}
 </style>
