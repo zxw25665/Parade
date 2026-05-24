@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>Message History</h2>
     <div class="row">
       <label style="font-size:13px">Limit:</label>
       <input v-model.number="limit" type="number" min="1" max="200" style="width:80px" />
@@ -19,7 +17,6 @@
       </div>
     </div>
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
-  </div>
 </template>
 
 <script setup>

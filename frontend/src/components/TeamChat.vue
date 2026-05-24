@@ -1,6 +1,4 @@
 <template>
-  <div class="panel">
-    <h2>Team Chat</h2>
 
     <div class="row" style="margin-bottom: 12px;">
       <select v-model="activeChannelId" style="flex: 1;">
@@ -28,7 +26,6 @@
     </div>
 
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
-  </div>
 </template>
 
 <script setup>
