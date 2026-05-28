@@ -548,8 +548,11 @@ func (a *App) GetRemoteDirectoryChildren(targetPubKey, path string) ([]map[strin
 		return nil, errors.New("target public key is required")
 	}
 
-	// Clean the path to prevent traversal patterns.
-	cleanPath := filepath.Clean(path)
+	// Clean the path to prevent traversal patterns (empty path = list shared roots).
+	cleanPath := path
+	if path != "" {
+		cleanPath = filepath.Clean(path)
+	}
 
 	entries, err := a.netEng.BrowseRemoteDirectory(targetPubKey, cleanPath)
 	if err != nil {

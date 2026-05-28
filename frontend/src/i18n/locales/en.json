@@ -83,6 +83,7 @@
     "browseLocal": "Browse Local Files",
     "path": "Path",
     "up": "Up",
+    "root": "Root",
     "clickToBrowse": "Click a shared directory above to browse",
     "selectPeer": "Select Peer",
     "browse": "Browse",
