@@ -6,12 +6,17 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"golang.org/x/crypto/curve25519"
 )
+
+// TeamKeysFile 队伍密钥磁盘持久化路径
+const TeamKeysFile = "./.parade_teams"
 
 // ---- 基础 AES-GCM 工具函数 ----
 
@@ -88,6 +93,7 @@ func (c *paradeCrypto) SetTeamKeyForTeam(teamID, teamPassword string) {
 	if c.activeTeam == "" {
 		c.activeTeam = teamID
 	}
+	_ = c.saveTeamKeys()
 }
 
 func (c *paradeCrypto) RemoveTeamKey(teamID string) {
@@ -99,6 +105,7 @@ func (c *paradeCrypto) RemoveTeamKey(teamID string) {
 			break
 		}
 	}
+	_ = c.saveTeamKeys()
 }
 
 func (c *paradeCrypto) SetActiveTeam(teamID string) error {
@@ -198,4 +205,44 @@ func (c *paradeCrypto) DecryptPrivate(ciphertext[]byte, remotePubKeyBase64 strin
 		return nil, err
 	}
 	return aesGCMDecrypt(sessionKey, ciphertext)
+}
+
+// ---- 队伍密钥持久化 ----
+
+func (c *paradeCrypto) saveTeamKeys() error {
+	if c.masterKey == nil {
+		return nil
+	}
+	data, err := json.Marshal(c.teamKeys)
+	if err != nil {
+		return err
+	}
+	encrypted, err := aesGCMEncrypt(c.masterKey, data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(TeamKeysFile, encrypted, 0600)
+}
+
+func (c *paradeCrypto) loadTeamKeys() {
+	data, err := os.ReadFile(TeamKeysFile)
+	if err != nil {
+		return
+	}
+	plain, err := aesGCMDecrypt(c.masterKey, data)
+	if err != nil {
+		return
+	}
+	if err := json.Unmarshal(plain, &c.teamKeys); err != nil {
+		return
+	}
+	if c.teamKeys == nil {
+		c.teamKeys = make(map[string][]byte)
+	}
+	if c.activeTeam == "" && len(c.teamKeys) > 0 {
+		for id := range c.teamKeys {
+			c.activeTeam = id
+			break
+		}
+	}
 }
