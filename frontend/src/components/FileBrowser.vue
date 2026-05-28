@@ -62,12 +62,14 @@
       <!-- Peer selector -->
       <h3 style="font-size:14px;margin:12px 0 6px;color:#aaa">{{ $t('file.selectPeer') }}</h3>
       <div class="row">
-        <select v-model="browsePeer" style="flex:1">
+        <select v-model="browsePeer" style="width:100%">
           <option value="">{{ $t('chat.selectPeer') }}</option>
           <option v-for="p in peers" :key="p.pubkey" :value="p.pubkey">
             {{ p.ip }} ({{ p.pubkey.slice(0, 12) }}...)
           </option>
         </select>
+      </div>
+      <div class="row">
         <button @click="doBrowse" :disabled="!browsePeer || loading">{{ $t('file.browse') }}</button>
       </div>
 
@@ -75,6 +77,7 @@
       <div v-if="browsePath !== ''" style="font-size:12px;margin:12px 0 8px;color:#8a8aaf">
         {{ $t('file.path') }}: {{ browsePath || '/' }}
         <button @click="doBrowseUp" style="font-size:11px;padding:2px 8px;margin-left:8px">{{ $t('file.up') }}</button>
+        <button @click="doBrowseRoot" style="font-size:11px;padding:2px 8px;margin-left:4px">{{ $t('file.root') }}</button>
       </div>
 
       <!-- Remote directory listing -->
@@ -149,7 +152,7 @@ function normalizeEntry(entry) {
   return {
     name: entry.Name || entry.name,
     path: entry.Path || entry.path,
-    isFolder: entry.IsFolder || entry.isFolder || entry.is_directory,
+    isFolder: entry.IsFolder || entry.isFolder || entry.isDirectory || entry.is_directory,
     size: entry.Size || entry.size
   }
 }
@@ -227,9 +230,14 @@ async function doClickEntry(entry) {
   }
 }
 
+async function doBrowseRoot() {
+  browsePath.value = ''
+  await doBrowse()
+}
+
 async function doBrowseUp() {
   if (!browsePath.value) return
-  const parts = browsePath.value.split('/')
+  const parts = browsePath.value.replace(/\\/g, '/').split('/')
   parts.pop()
   const parentPath = parts.join('/')
   browsePath.value = parentPath

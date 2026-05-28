@@ -107,6 +107,8 @@ func (c *paradeCrypto) LoadIdentity(password, filepath string) error {
 		c.teamKeys = make(map[string][]byte)
 	}
 
+	c.loadTeamKeys()
+
 	return nil
 }
 

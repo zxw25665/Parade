@@ -83,6 +83,7 @@
     "browseLocal": "浏览本地文件",
     "path": "路径",
     "up": "上层",
+    "root": "顶层",
     "clickToBrowse": "点击上方共享目录进行浏览",
     "selectPeer": "选择节点",
     "browse": "浏览",

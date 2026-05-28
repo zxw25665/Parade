@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
@@ -24,7 +23,7 @@ import (
 	pb "parade/internal/network/pb"
 )
 
-// Engine 是网络控制面实现，满足 app.NetworkEngine。
+// Engine is the network control plane implementation satisfying app.NetworkEngine.
 type Engine struct {
 	mu      sync.RWMutex
 	started bool
@@ -32,40 +31,18 @@ type Engine struct {
 	bus    eventbus.EventBus
 	crypto crypto.Engine
 
-	discovery *Discovery
-	filePlane *FilePlane
+	filePlane  *FilePlane
 	fileEngine FileTransferEngine
 
-	// 控制面 gRPC 服务器字段
-	controlListener  net.Listener
-	controlServer    *grpc.Server
-	chatServiceImpl   *ChatServiceImpl
-	controlPort      int
+	// Control plane gRPC server fields (chat + file on single port 4327)
+	controlListener net.Listener
+	controlServer   *grpc.Server
+	chatServiceImpl *ChatServiceImpl
+	controlPort     int
 
-	// 数据面 gRPC 服务器字段
-	dataListener     net.Listener
-	dataServer       *grpc.Server
-	fileServiceImpl  *FileService
-	dataPort         int
+	lifecycleWG sync.WaitGroup
 
-	// mDNS 服务字段
-	mdnsHandle ServiceHandle
-
-	// gRPC 客户端连接池（控制面）
-	clientConns map[string]*grpc.ClientConn // 按 pubKey 索引
-	connMu      sync.RWMutex
-
-	// gRPC 客户端连接池（数据面）
-	dataClientConns map[string]*grpc.ClientConn
-	dataConnMu      sync.RWMutex
-
-	// 对等节点会话（健康监测 + 自动重连）
-	peerSessions map[string]*PeerSession
-	sessionMu    sync.RWMutex
-
-	discoveryCtx    context.Context
-	discoveryCancel context.CancelFunc
-	lifecycleWG     sync.WaitGroup
+	connMgr *ConnMgr
 
 	logr logger.Logger
 }
@@ -78,17 +55,13 @@ type ChatServiceImpl struct {
 
 func NewEngine(bus eventbus.EventBus, cry crypto.Engine) *Engine {
 	eng := &Engine{
-		bus:             bus,
-		crypto:          cry,
-		discovery:       NewDiscovery(bus, NewServiceBrowser()),
-		filePlane:       NewFilePlane(bus),
-		controlPort:     4327,
-		dataPort:        4328,
-		clientConns:     make(map[string]*grpc.ClientConn),
-		dataClientConns: make(map[string]*grpc.ClientConn),
-		peerSessions:    make(map[string]*PeerSession),
+		bus:         bus,
+		crypto:      cry,
+		filePlane:   NewFilePlane(bus),
+		controlPort: 4327,
 	}
 	eng.chatServiceImpl = &ChatServiceImpl{engine: eng}
+	eng.connMgr = NewConnMgr(eng, eng.controlPort)
 	return eng
 }
 
@@ -147,6 +120,13 @@ func (e *Engine) Start(port int) error {
 	e.controlServer = grpc.NewServer(keepaliveServerOpts...)
 	chatpb.RegisterChatServiceServer(e.controlServer, e.chatServiceImpl)
 
+	// Register file service on the same server (single port 4327 for both)
+	if e.fileEngine != nil {
+		fileSvc := NewFileService(e.fileEngine, e.crypto.GetPublicKeyBase64())
+		pb.RegisterFileTransferServiceServer(e.controlServer, fileSvc)
+		e.log(logger.Info, "grpc", fmt.Sprintf("file service registered on control port :%d", e.controlPort))
+	}
+
 	e.lifecycleWG.Add(1)
 	go func() {
 		defer e.lifecycleWG.Done()
@@ -155,28 +135,7 @@ func (e *Engine) Start(port int) error {
 		}
 	}()
 
-	// 启动数据面 gRPC 服务器（端口 4328）
-	if e.fileEngine != nil {
-		dataListener, err := net.Listen("tcp", fmt.Sprintf(":%d", e.dataPort))
-		if err != nil {
-			return fmt.Errorf("failed to listen on data port %d: %w", e.dataPort, err)
-		}
-
-		e.dataListener = dataListener
-		e.dataServer = grpc.NewServer(keepaliveServerOpts...)
-		e.fileServiceImpl = NewFileService(e.fileEngine, e.crypto.GetPublicKeyBase64())
-		pb.RegisterFileTransferServiceServer(e.dataServer, e.fileServiceImpl)
-
-		e.lifecycleWG.Add(1)
-		go func() {
-			defer e.lifecycleWG.Done()
-			if err := e.dataServer.Serve(dataListener); err != nil && err != grpc.ErrServerStopped {
-				e.log(logger.Error, "grpc", fmt.Sprintf("gRPC data server error: %v", err))
-			}
-		}()
-	}
-
-	// mDNS: register _parade._tcp service via ServiceBrowser
+	// Start mDNS discovery through connection manager
 	iface, lanIP, err := SelectLANInterface()
 	if err != nil {
 		e.log(logger.Warning, "discovery", fmt.Sprintf("mDNS: %v, discovery may not work", err))
@@ -184,63 +143,27 @@ func (e *Engine) Start(port int) error {
 		e.log(logger.Info, "discovery", fmt.Sprintf("mDNS selected interface %s (%s)", iface.Name, lanIP))
 	}
 
-	teamHash := e.crypto.TeamKeyHash()
-	teamIDs := e.crypto.GetTeamIDs()
 	var teamHashes []string
-	for _, tid := range teamIDs {
+	for _, tid := range e.crypto.GetTeamIDs() {
 		if h := e.crypto.TeamKeyHashFor(tid); h != "" {
 			teamHashes = append(teamHashes, h)
 		}
 	}
-	teamHashStr := strings.Join(teamHashes, ",")
 
-	info := []string{
-		fmt.Sprintf("pubkey=%s", e.crypto.GetPublicKeyBase64()),
-		fmt.Sprintf("team=%s", teamHashStr),
+	var lanIPs []net.IP
+	if lanIP != nil {
+		lanIPs = []net.IP{lanIP}
 	}
-	lanIPs := []net.IP{lanIP}
 
-	browser := NewServiceBrowser()
-	e.discovery = NewDiscovery(e.bus, browser)
-	e.discovery.logr = e.logr
-
-	handle, err := browser.Register(
-		"Parade-"+e.crypto.GetPublicKeyBase64()[:8],
-		"_parade._tcp",
-		"local.",
-		e.controlPort,
-		lanIPs,
-		info,
+	if err := e.connMgr.StartDiscovery(
+		e.crypto.GetPublicKeyBase64(),
+		teamHashes,
 		iface,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to register mDNS service: %w", err)
+		lanIPs,
+		e.controlPort,
+	); err != nil {
+		return err
 	}
-	e.mdnsHandle = handle
-	e.log(logger.Info, "discovery", fmt.Sprintf("mDNS started, advertising %s on %v (team=%s)",
-		"_parade._tcp", lanIPs, truncateKey(teamHash)))
-
-	// 启动 Discovery 循环
-	e.discovery.SetLocalPubKey(e.crypto.GetPublicKeyBase64())
-	e.discovery.SetTeamHashes(teamHashes)
-	if iface != nil {
-		e.discovery.SetIface(iface)
-	}
-	e.discovery.SetOnPeerDiscovered(func(peer PeerInfo) {
-		go func() {
-			if _, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress); err != nil {
-				e.log(logger.Warning, "grpc", fmt.Sprintf("mDNS auto-connect to peer %s failed: %v", truncateKey(peer.PubKeyBase64), err))
-			} else {
-				e.log(logger.Info, "network", fmt.Sprintf("mDNS auto-connected to peer %s @ %s", truncateKey(peer.PubKeyBase64), peer.IPAddress))
-			}
-		}()
-	})
-	e.discoveryCtx, e.discoveryCancel = context.WithCancel(context.Background())
-	e.lifecycleWG.Add(1)
-	go func() {
-		defer e.lifecycleWG.Done()
-		e.discovery.Run(e.discoveryCtx)
-	}()
 
 	e.started = true
 	return nil
@@ -252,54 +175,16 @@ func (e *Engine) Stop() error {
 		e.mu.Unlock()
 		return nil
 	}
-	
-	cancel := e.discoveryCancel
+
 	server := e.controlServer
-	dataSrv := e.dataServer
-	mdnsHandle := e.mdnsHandle
 	e.started = false
-	e.discoveryCtx = nil
-	e.discoveryCancel = nil
 	e.controlServer = nil
-	e.dataServer = nil
-	e.mdnsHandle = nil
 	e.mu.Unlock()
 
-	if mdnsHandle != nil {
-		mdnsHandle.Shutdown()
-	}
-
-	e.sessionMu.Lock()
-	for _, session := range e.peerSessions {
-		session.Stop()
-	}
-	e.peerSessions = make(map[string]*PeerSession)
-	e.sessionMu.Unlock()
-
-	e.connMu.Lock()
-	for _, conn := range e.clientConns {
-		conn.Close()
-	}
-	e.clientConns = make(map[string]*grpc.ClientConn)
-	e.connMu.Unlock()
-
-	e.dataConnMu.Lock()
-	for _, conn := range e.dataClientConns {
-		conn.Close()
-	}
-	e.dataClientConns = make(map[string]*grpc.ClientConn)
-	e.dataConnMu.Unlock()
-
-	if dataSrv != nil {
-		dataSrv.GracefulStop()
-	}
+	e.connMgr.CloseAll()
 
 	if server != nil {
 		server.GracefulStop()
-	}
-
-	if cancel != nil {
-		cancel()
 	}
 
 	e.lifecycleWG.Wait()
@@ -315,73 +200,40 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 		return errors.New("network engine not started")
 	}
 
-	// 获取当前队伍的对等节点
-	teamHash := e.crypto.TeamKeyHash()
-	var peers []PeerInfo
-	if teamHash != "" {
-		peers = e.discovery.GetPeersForTeam(teamHash)
-	} else {
-		peers = e.discovery.Snapshot()
-	}
+	peers := e.connMgr.Peers()
 	if len(peers) == 0 {
-		// 没有对等节点，仅本地处理
 		plain, err := e.crypto.DecryptTeam(payload)
 		if err != nil {
 			return err
 		}
-
 		var msg eventbus.MsgReceivedPayload
 		if err := json.Unmarshal(plain, &msg); err != nil {
 			return err
 		}
-
 		e.bus.Publish(eventbus.TopicMsgReceived, msg)
 		return nil
 	}
 
-	// 异步发送到所有对等节点
 	go func() {
 		envelope := &chatpb.Envelope{
 			SenderId:   e.crypto.GetPublicKeyBase64(),
 			Payload:    payload,
 			Type:       0,
 			ReceiverId: "",
-			TeamId:     e.crypto.GetActiveTeam(),
+			TeamId:     "",
 		}
 
 		for _, peer := range peers {
 			go func(p PeerInfo) {
-				conn, err := e.getOrDialPeer(p.PubKeyBase64, p.IPAddress)
+				if e.connMgr.SendViaIncoming(p.PubKeyBase64, envelope) {
+					return
+				}
+				_, err := e.connMgr.GetOrDial(p.PubKeyBase64, p.IPAddress)
 				if err != nil {
 					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to dial peer %s: %v", p.PubKeyBase64, err))
 					return
 				}
-
-				client := chatpb.NewChatServiceClient(conn)
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-
-				stream, err := client.StreamChat(ctx)
-				if err != nil {
-					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to create stream with %s: %v", p.PubKeyBase64, err))
-					return
-				}
-				defer stream.CloseSend()
-
-				// 发送消息
-				if err := stream.Send(envelope); err != nil {
-					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to send to %s: %v", p.PubKeyBase64, err))
-					e.removePeerConnection(p.PubKeyBase64)
-					return
-				}
-
-				// 等待确认
-				_, err = stream.Recv()
-				if err != nil {
-					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to receive ack from %s: %v", p.PubKeyBase64, err))
-					e.removePeerConnection(p.PubKeyBase64)
-					return
-				}
+				e.connMgr.SendViaChannel(p.PubKeyBase64, envelope)
 			}(peer)
 		}
 	}()
@@ -398,75 +250,41 @@ func (e *Engine) BroadcastChannel(channelID string, payload []byte) error {
 		return errors.New("network engine not started")
 	}
 
-	// 获取当前队伍的对等节点
-	teamHash := e.crypto.TeamKeyHash()
-	var peers []PeerInfo
-	if teamHash != "" {
-		peers = e.discovery.GetPeersForTeam(teamHash)
-	} else {
-		peers = e.discovery.Snapshot()
-	}
+	peers := e.connMgr.Peers()
 	if len(peers) == 0 {
-		// 没有对等节点，仅本地处理
-		plain, err := e.crypto.DecryptTeam(payload)
+		plain, err := e.crypto.DecryptTeamForTeam(e.crypto.GetActiveTeam(), payload)
 		if err != nil {
 			return err
 		}
-
 		var msg eventbus.MsgReceivedPayload
 		if err := json.Unmarshal(plain, &msg); err != nil {
 			return err
 		}
-		msg.ChannelID = channelID
-
 		e.bus.Publish(eventbus.TopicMsgReceived, msg)
 		return nil
 	}
 
-	// 异步发送到所有对等节点
 	go func() {
 		envelope := &chatpb.Envelope{
 			SenderId:   e.crypto.GetPublicKeyBase64(),
 			Payload:    payload,
 			Type:       0,
 			ReceiverId: "",
-			TeamId:     e.crypto.GetActiveTeam(),
+			TeamId:     "",
 			ChannelId:  channelID,
 		}
 
 		for _, peer := range peers {
 			go func(p PeerInfo) {
-				conn, err := e.getOrDialPeer(p.PubKeyBase64, p.IPAddress)
+				if e.connMgr.SendViaIncoming(p.PubKeyBase64, envelope) {
+					return
+				}
+				_, err := e.connMgr.GetOrDial(p.PubKeyBase64, p.IPAddress)
 				if err != nil {
 					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to dial peer %s: %v", p.PubKeyBase64, err))
 					return
 				}
-
-				client := chatpb.NewChatServiceClient(conn)
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-
-				stream, err := client.StreamChat(ctx)
-				if err != nil {
-					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to create stream with %s: %v", p.PubKeyBase64, err))
-					return
-				}
-				defer stream.CloseSend()
-
-				// 发送消息
-				if err := stream.Send(envelope); err != nil {
-					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to send to %s: %v", p.PubKeyBase64, err))
-					e.removePeerConnection(p.PubKeyBase64)
-					return
-				}
-
-				// 等待确认
-				_, err = stream.Recv()
-				if err != nil {
-					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to receive ack from %s: %v", p.PubKeyBase64, err))
-					e.removePeerConnection(p.PubKeyBase64)
-					return
-				}
+				e.connMgr.SendViaChannel(p.PubKeyBase64, envelope)
 			}(peer)
 		}
 	}()
@@ -474,12 +292,10 @@ func (e *Engine) BroadcastChannel(channelID string, payload []byte) error {
 	return nil
 }
 
-// UnicastPrivate 发送私聊消息到指定对等节点。
 func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 	if targetPubKey == "" {
-		return errors.New("target public key is required")
+		return errors.New("target pubkey is required")
 	}
-
 	e.mu.RLock()
 	started := e.started
 	e.mu.RUnlock()
@@ -487,15 +303,7 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 		return errors.New("network engine not started")
 	}
 
-	// 查找目标对等节点
-	peer, exists := e.discovery.GetPeerByPubKey(targetPubKey)
-	if !exists {
-		return fmt.Errorf("peer %s not found in discovery", targetPubKey)
-	}
-
-	// 异步发送消息
 	go func() {
-		// Double encryption: payload is already EncryptPrivate(inner), wrap with EncryptTeam(outer)
 		wrapped, err := e.crypto.EncryptTeam(payload)
 		if err != nil {
 			e.log(logger.Warning, "chat", fmt.Sprintf("EncryptTeam wrap for private message failed: %v", err))
@@ -510,35 +318,25 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 			TeamId:     e.crypto.GetActiveTeam(),
 		}
 
-		conn, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress)
+		if e.connMgr.SendViaIncoming(targetPubKey, envelope) {
+			e.log(logger.Debug, "chat", "private message sent via reverse stream to "+truncateKey(targetPubKey))
+			return
+		}
+
+		peer, ok := e.connMgr.GetPeer(targetPubKey)
+		if !ok {
+			e.log(logger.Warning, "chat", "peer not found for private message: "+truncateKey(targetPubKey))
+			return
+		}
+
+		_, err = e.connMgr.GetOrDial(peer.PubKeyBase64, peer.IPAddress)
 		if err != nil {
 			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to dial peer %s: %v", peer.PubKeyBase64, err))
 			return
 		}
 
-		client := chatpb.NewChatServiceClient(conn)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		stream, err := client.StreamChat(ctx)
-		if err != nil {
-			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to create stream with %s: %v", peer.PubKeyBase64, err))
-			return
-		}
-		defer stream.CloseSend()
-
-		// 发送消息
-		if err := stream.Send(envelope); err != nil {
-			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to send to %s: %v", peer.PubKeyBase64, err))
-			e.removePeerConnection(peer.PubKeyBase64)
-			return
-		}
-
-		// 等待确认
-		_, err = stream.Recv()
-		if err != nil {
-			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to receive ack from %s: %v", peer.PubKeyBase64, err))
-			e.removePeerConnection(peer.PubKeyBase64)
+		if e.connMgr.SendViaChannel(targetPubKey, envelope) {
+			e.log(logger.Debug, "chat", "private message sent via persistent stream to "+truncateKey(targetPubKey))
 			return
 		}
 	}()
@@ -546,11 +344,7 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 	return nil
 }
 
-func (e *Engine) Discovery() *Discovery {
-	return e.discovery
-}
-
-// OnForeground 前台恢复时触发：立即刷新 mDNS 发现 + 对所有已知 peer 执行健康检查。
+// OnForeground 前台恢复时触发：立即刷新 mDNS 发现。
 func (e *Engine) OnForeground() {
 	e.mu.RLock()
 	started := e.started
@@ -559,29 +353,13 @@ func (e *Engine) OnForeground() {
 		return
 	}
 
-	e.log(logger.Info, "network", "foreground resume: triggering discovery refresh and peer health checks")
-
-	e.discovery.TriggerQuery()
-
-	e.sessionMu.RLock()
-	sessions := make([]*PeerSession, 0, len(e.peerSessions))
-	for _, ps := range e.peerSessions {
-		sessions = append(sessions, ps)
-	}
-	e.sessionMu.RUnlock()
-
-	for _, ps := range sessions {
-		if !ps.reconnecting.Load() {
-			go func(p *PeerSession) {
-				p.checkAndReconnect()
-			}(ps)
-		}
-	}
+	e.log(logger.Info, "network", "foreground resume: triggering discovery refresh")
+	e.connMgr.TriggerDiscovery()
 }
 
 // Peers 返回已发现节点的快照（用于 app.NetworkEngine 接口）。
 func (e *Engine) Peers() []map[string]string {
-	peers := e.discovery.Snapshot()
+	peers := e.connMgr.Peers()
 	out := make([]map[string]string, 0, len(peers))
 	for _, p := range peers {
 		out = append(out, map[string]string{
@@ -609,15 +387,15 @@ func (e *Engine) StartDownload(targetPubKey, virtualPath, localSavePath string) 
 	if e.fileEngine == nil {
 		return errors.New("file engine is not attached")
 	}
-	peer, exists := e.discovery.GetPeerByPubKey(targetPubKey)
+	peer, exists := e.connMgr.GetPeer(targetPubKey)
 	if !exists {
 		return fmt.Errorf("peer %s not found in discovery", targetPubKey)
 	}
-	conn, err := e.getOrDialDataPeer(peer.PubKeyBase64, peer.IPAddress)
+	pc, err := e.connMgr.GetOrDial(peer.PubKeyBase64, peer.IPAddress)
 	if err != nil {
 		return err
 	}
-	client := pb.NewFileTransferServiceClient(conn)
+	client := pb.NewFileTransferServiceClient(pc.Conn())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	meta, err := client.GetFileMeta(ctx, &pb.FileMetaRequest{
@@ -649,158 +427,7 @@ func (e *Engine) BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseE
 	if !started {
 		return nil, errors.New("network engine not started")
 	}
-
-	peer, exists := e.discovery.GetPeerByPubKey(targetPubKey)
-	if !exists {
-		return nil, fmt.Errorf("peer %s not found in discovery", targetPubKey)
-	}
-
-	conn, err := e.getOrDialDataPeer(peer.PubKeyBase64, peer.IPAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to peer data plane: %w", err)
-	}
-
-	client := pb.NewFileTransferServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	resp, err := client.BrowseDirectory(ctx, &pb.BrowseRequest{
-		PeerId: targetPubKey,
-		Path:   path,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("browse directory RPC failed: %w", err)
-	}
-
-	return resp.GetEntries(), nil
-}
-
-// getOrDialPeer 获取或建立到对等节点的控制面 gRPC 连接。
-func (e *Engine) getOrDialPeer(pubKey, ipAddr string) (*grpc.ClientConn, error) {
-	if pubKey == "" || ipAddr == "" {
-		return nil, errors.New("pubKey and ipAddr are required")
-	}
-
-	e.connMu.RLock()
-	conn, exists := e.clientConns[pubKey]
-	e.connMu.RUnlock()
-
-	if exists && conn != nil {
-		state := conn.GetState()
-		if state == connectivity.Ready || state == connectivity.Idle {
-			return conn, nil
-		}
-		conn.Close()
-		e.connMu.Lock()
-		delete(e.clientConns, pubKey)
-		e.connMu.Unlock()
-	}
-
-	e.connMu.Lock()
-	defer e.connMu.Unlock()
-
-	conn, exists = e.clientConns[pubKey]
-	if exists && conn != nil {
-		return conn, nil
-	}
-
-	target := fmt.Sprintf("%s:%d", ipAddr, e.controlPort)
-	conn, err := grpc.Dial(target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                15 * time.Second,
-			Timeout:             5 * time.Second,
-			PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial %s: %w", target, err)
-	}
-
-	e.clientConns[pubKey] = conn
-
-	e.sessionMu.Lock()
-	if _, exists := e.peerSessions[pubKey]; !exists {
-		session := NewPeerSession(pubKey, ipAddr, e, conn)
-		session.logr = e.logr
-		e.peerSessions[pubKey] = session
-		session.Start()
-	}
-	e.sessionMu.Unlock()
-
-	return conn, nil
-}
-
-// getOrDialDataPeer 获取或建立到对等节点的数据面 gRPC 连接。
-func (e *Engine) getOrDialDataPeer(pubKey, ipAddr string) (*grpc.ClientConn, error) {
-	if pubKey == "" || ipAddr == "" {
-		return nil, errors.New("pubKey and ipAddr are required")
-	}
-
-	e.dataConnMu.RLock()
-	conn, exists := e.dataClientConns[pubKey]
-	e.dataConnMu.RUnlock()
-
-	if exists && conn != nil {
-		state := conn.GetState()
-		if state == connectivity.Ready || state == connectivity.Idle {
-			return conn, nil
-		}
-		conn.Close()
-		e.dataConnMu.Lock()
-		delete(e.dataClientConns, pubKey)
-		e.dataConnMu.Unlock()
-	}
-
-	e.dataConnMu.Lock()
-	defer e.dataConnMu.Unlock()
-
-	conn, exists = e.dataClientConns[pubKey]
-	if exists && conn != nil {
-		return conn, nil
-	}
-
-	target := fmt.Sprintf("%s:%d", ipAddr, e.dataPort)
-	conn, err := grpc.Dial(target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                15 * time.Second,
-			Timeout:             5 * time.Second,
-			PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial data %s: %w", target, err)
-	}
-
-	e.dataClientConns[pubKey] = conn
-	return conn, nil
-}
-
-// removePeerConnection 移除到指定对等节点的所有连接并通知 Discovery。
-func (e *Engine) removePeerConnection(pubKey string) {
-	e.sessionMu.Lock()
-	if session, exists := e.peerSessions[pubKey]; exists {
-		session.Stop()
-		delete(e.peerSessions, pubKey)
-	}
-	e.sessionMu.Unlock()
-
-	e.connMu.Lock()
-	if conn, exists := e.clientConns[pubKey]; exists {
-		conn.Close()
-		delete(e.clientConns, pubKey)
-	}
-	e.connMu.Unlock()
-
-	e.dataConnMu.Lock()
-	if conn, exists := e.dataClientConns[pubKey]; exists {
-		conn.Close()
-		delete(e.dataClientConns, pubKey)
-	}
-	e.dataConnMu.Unlock()
-
-	e.discovery.RemovePeer(pubKey)
+	return e.connMgr.BrowseRemote(targetPubKey, path)
 }
 
 // getLANIPv4Addrs 返回本机所有非 loopback 的 IPv4 地址。
@@ -830,21 +457,24 @@ func getLANIPv4Addrs() []net.IP {
 // StreamChat 实现双向流聊天 RPC。
 func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer) error {
 	ctx := stream.Context()
+	senderRegistered := false
 	senderID := ""
 
 	for {
 		select {
 		case <-ctx.Done():
+			cs.engine.connMgr.UnregisterIncoming(senderID)
 			return ctx.Err()
 		default:
 		}
 
-		// 接收来自客户端的消息
 		envelope, err := stream.Recv()
 		if err != nil {
 			if err == io.EOF {
+				cs.engine.connMgr.UnregisterIncoming(senderID)
 				return nil
 			}
+			cs.engine.connMgr.UnregisterIncoming(senderID)
 			return fmt.Errorf("recv error: %w", err)
 		}
 
@@ -853,8 +483,10 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 		}
 
 		if envelope.SenderId != "" {
-			if senderID == "" {
+			if !senderRegistered {
+				senderRegistered = true
 				senderID = envelope.SenderId
+				cs.engine.connMgr.RegisterIncoming(senderID, stream)
 			}
 			if p, ok := peer.FromContext(stream.Context()); ok {
 				ipAddr := ""
@@ -865,7 +497,7 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 					ipAddr = host
 				}
 				if ipAddr != "" {
-					cs.engine.discovery.UpsertPeer(PeerInfo{
+					cs.engine.connMgr.UpsertPeer(PeerInfo{
 						PubKeyBase64: envelope.SenderId,
 						IPAddress:    ipAddr,
 					})
@@ -873,56 +505,11 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 			}
 		}
 
-		var plain []byte
-		switch envelope.Type {
-		case 1: // Private: DecryptTeam(outer) → DecryptPrivate(inner)
-			teamPlain, err := cs.engine.crypto.DecryptTeam(envelope.Payload)
-			if err != nil {
-				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("private message DecryptTeam failed: %v", err))
-				continue
-			}
-			plain, err = cs.engine.crypto.DecryptPrivate(teamPlain, envelope.SenderId)
-			if err != nil {
-				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("private message DecryptPrivate failed: %v", err))
-				continue
-			}
-		default: // Type 0 (team) or 99 (test): DecryptTeam only
-			if envelope.Type != 0 && envelope.Type != 99 {
-				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("warning: unknown envelope type %d", envelope.Type))
-			}
-			var err error
-			if envelope.TeamId != "" {
-				plain, err = cs.engine.crypto.DecryptTeamForTeam(envelope.TeamId, envelope.Payload)
-			} else {
-				plain, err = cs.engine.crypto.DecryptTeam(envelope.Payload)
-			}
-			if err != nil {
-				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("DecryptTeam failed: %v", err))
-				continue
-			}
-		}
+		processReceivedEnvelope(cs.engine, envelope)
 
-		var msg eventbus.MsgReceivedPayload
-		if err := json.Unmarshal(plain, &msg); err != nil {
-			cs.engine.log(logger.Warning, "chat", fmt.Sprintf("unmarshal error: %v", err))
-			continue
-		}
-
-		msg.TeamID = envelope.TeamId
-		msg.ChannelID = envelope.ChannelId
-
-		if envelope.Type == 1 {
-			msg.ReceiverID = envelope.ReceiverId
-			cs.engine.bus.Publish(eventbus.TopicPrivateMsgReceived, msg)
-		} else {
-			cs.engine.bus.Publish(eventbus.TopicMsgReceived, msg)
-		}
-		cs.engine.discovery.RefreshLastSeen(envelope.SenderId)
-
-		// 响应客户端（确认收到）
 		response := &chatpb.Envelope{
 			SenderId:  cs.engine.crypto.GetPublicKeyBase64(),
-			Payload:   []byte("ack"),
+			Payload:   nil,
 			Signature: "",
 		}
 		if err := stream.Send(response); err != nil {
@@ -992,7 +579,7 @@ func (cs *ChatServiceImpl) Handshake(ctx context.Context, req *chatpb.HandshakeR
 				ipAddr = host
 			}
 			if ipAddr != "" {
-				cs.engine.discovery.UpsertPeer(PeerInfo{
+				cs.engine.connMgr.UpsertPeer(PeerInfo{
 					PubKeyBase64: req.SenderId,
 					IPAddress:    ipAddr,
 				})
@@ -1110,11 +697,12 @@ func (e *Engine) ConnectToPeer(ipAddress string) (*PeerConnectResult, error) {
 	conn.Close()
 
 	// ---- Phase 3: Test message via persistent pooled connection ----
-	pooledConn, poolErr := e.getOrDialPeer(result.PubKey, ipAddress)
+	pc, poolErr := e.connMgr.GetOrDial(result.PubKey, ipAddress)
 	if poolErr != nil {
 		result.Phase3Send = PhaseResult{Success: false, Label: "消息发送", Error: fmt.Sprintf("建立持久连接失败: %v", poolErr)}
 		result.Phase3Recv = PhaseResult{Success: false, Label: "收到消息", Error: "跳过 (持久连接未建立)"}
 	} else {
+		pooledConn := pc.Conn()
 		pooledClient := chatpb.NewChatServiceClient(pooledConn)
 		streamCtx, streamCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer streamCancel()
@@ -1165,10 +753,13 @@ func (e *Engine) ConnectToPeer(ipAddress string) (*PeerConnectResult, error) {
 
 	// 注册 peer 到 discovery (getOrDialPeer 已注册，此处确保 Discovery 更新)
 	if result.PubKey != "" {
-		e.discovery.UpsertPeer(PeerInfo{
+		e.connMgr.UpsertPeer(PeerInfo{
 			PubKeyBase64: result.PubKey,
 			IPAddress:    ipAddress,
 		})
+		if th := e.crypto.TeamKeyHash(); th != "" {
+			e.connMgr.AddPeerTeam(result.PubKey, th)
+		}
 	}
 
 	return result, nil
