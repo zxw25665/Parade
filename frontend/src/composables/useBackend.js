@@ -30,6 +30,45 @@ import {
   DeleteShareGroup,
   GetShareGroupDirs
 } from '../lib/wailsjs/go/app/App'
+import { addLogEntry } from './useLogStore.js'
+
+function logIPC(name, args, error, duration) {
+  const msg = error
+    ? `${name} ERROR (${duration}ms): ${error}`
+    : `${name} ok (${duration}ms)`
+  addLogEntry({
+    time: new Date().toLocaleTimeString(),
+    level: error ? 4 : 2,
+    source: 'ipc',
+    message: msg
+  })
+}
+
+function logIPCCall(name, args) {
+  addLogEntry({
+    time: new Date().toLocaleTimeString(),
+    level: 2,
+    source: 'ipc',
+    message: `${name} called`
+  })
+}
+
+function wrapIPC(name, fn) {
+  return async (...args) => {
+    logIPCCall(name, args)
+    const start = performance.now()
+    try {
+      const result = await fn(...args)
+      const dur = (performance.now() - start).toFixed(1)
+      logIPC(name, args, null, dur)
+      return result
+    } catch (e) {
+      const dur = (performance.now() - start).toFixed(1)
+      logIPC(name, args, String(e), dur)
+      throw e
+    }
+  }
+}
 
 export function useBackend() {
   async function connectToPeer(ip) {
@@ -41,36 +80,36 @@ export function useBackend() {
   }
 
   return {
-    checkHasIdentity: CheckHasIdentity,
-    register: Register,
-    login: Login,
-    joinTeam: JoinTeam,
-    joinTeamWithName: JoinTeamWithName,
-    leaveTeam: LeaveTeam,
-    switchTeam: SwitchTeam,
-    listTeams: ListTeams,
-    getActiveTeam: GetActiveTeam,
-    getPeers: GetPeers,
-    sendTeamChat: SendTeamChat,
-    sendPrivateChat: SendPrivateChat,
-    sendChannelChat: SendChannelChat,
-    createChannel: CreateChannel,
-    listChannels: ListChannels,
-    joinChannel: JoinChannel,
-    leaveChannel: LeaveChannel,
-    shareDirectory: ShareDirectory,
-    unshareDirectory: UnshareDirectory,
-    getDirectoryChildren: GetDirectoryChildren,
-    getRemoteDirectoryChildren: GetRemoteDirectoryChildren,
-    startDownload: StartDownload,
-    getRecentHistory: GetRecentHistory,
-    getRecentHistoryByChannel: GetRecentHistoryByChannel,
-    connectToPeer,
-    createShareGroup: CreateShareGroup,
-    listShareGroups: ListShareGroups,
-    addDirectoryToShareGroup: AddDirectoryToShareGroup,
-    removeDirectoryFromShareGroup: RemoveDirectoryFromShareGroup,
-    deleteShareGroup: DeleteShareGroup,
-    getShareGroupDirs: GetShareGroupDirs
+    checkHasIdentity: wrapIPC('checkHasIdentity', CheckHasIdentity),
+    register: wrapIPC('register', Register),
+    login: wrapIPC('login', Login),
+    joinTeam: wrapIPC('joinTeam', JoinTeam),
+    joinTeamWithName: wrapIPC('joinTeamWithName', JoinTeamWithName),
+    leaveTeam: wrapIPC('leaveTeam', LeaveTeam),
+    switchTeam: wrapIPC('switchTeam', SwitchTeam),
+    listTeams: wrapIPC('listTeams', ListTeams),
+    getActiveTeam: wrapIPC('getActiveTeam', GetActiveTeam),
+    getPeers: wrapIPC('getPeers', GetPeers),
+    sendTeamChat: wrapIPC('sendTeamChat', SendTeamChat),
+    sendPrivateChat: wrapIPC('sendPrivateChat', SendPrivateChat),
+    sendChannelChat: wrapIPC('sendChannelChat', SendChannelChat),
+    createChannel: wrapIPC('createChannel', CreateChannel),
+    listChannels: wrapIPC('listChannels', ListChannels),
+    joinChannel: wrapIPC('joinChannel', JoinChannel),
+    leaveChannel: wrapIPC('leaveChannel', LeaveChannel),
+    shareDirectory: wrapIPC('shareDirectory', ShareDirectory),
+    unshareDirectory: wrapIPC('unshareDirectory', UnshareDirectory),
+    getDirectoryChildren: wrapIPC('getDirectoryChildren', GetDirectoryChildren),
+    getRemoteDirectoryChildren: wrapIPC('getRemoteDirectoryChildren', GetRemoteDirectoryChildren),
+    startDownload: wrapIPC('startDownload', StartDownload),
+    getRecentHistory: wrapIPC('getRecentHistory', GetRecentHistory),
+    getRecentHistoryByChannel: wrapIPC('getRecentHistoryByChannel', GetRecentHistoryByChannel),
+    connectToPeer: wrapIPC('connectToPeer', connectToPeer),
+    createShareGroup: wrapIPC('createShareGroup', CreateShareGroup),
+    listShareGroups: wrapIPC('listShareGroups', ListShareGroups),
+    addDirectoryToShareGroup: wrapIPC('addDirectoryToShareGroup', AddDirectoryToShareGroup),
+    removeDirectoryFromShareGroup: wrapIPC('removeDirectoryFromShareGroup', RemoveDirectoryFromShareGroup),
+    deleteShareGroup: wrapIPC('deleteShareGroup', DeleteShareGroup),
+    getShareGroupDirs: wrapIPC('getShareGroupDirs', GetShareGroupDirs)
   }
 }

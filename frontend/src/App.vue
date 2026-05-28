@@ -47,6 +47,10 @@
         <CollapsibleSection :title="$t('panel.history')" :default-open="false">
           <HistoryViewer />
         </CollapsibleSection>
+
+        <CollapsibleSection :title="$t('panel.logs')" :default-open="false">
+          <LogPanel />
+        </CollapsibleSection>
       </div>
     </aside>
   </div>
@@ -64,6 +68,7 @@ import ChatPanel from './components/ChatPanel.vue'
 import FileBrowser from './components/FileBrowser.vue'
 import DownloadList from './components/DownloadList.vue'
 import HistoryViewer from './components/HistoryViewer.vue'
+import LogPanel from './components/LogPanel.vue'
 import CollapsibleSection from './components/CollapsibleSection.vue'
 import LanguageToggle from './components/LanguageToggle.vue'
 

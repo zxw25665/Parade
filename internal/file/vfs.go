@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"parade/internal/core/db"
+	"parade/internal/core/logger"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
@@ -69,7 +70,7 @@ func (e *Engine) ShareDirectory(absPath string) error {
 			CreatedAt: time.Now(),
 		}
 		if err := runtime.database.InsertSharedDirectory(context.Background(), dir); err != nil {
-			fmt.Printf("[file] failed to persist shared directory: %v\n", err)
+			e.log(logger.Warning, "file", "failed to persist shared directory: "+err.Error())
 		}
 	}
 
@@ -92,7 +93,7 @@ func (e *Engine) UnshareDirectory(absPath string) error {
 	runtime := e.getRuntime()
 	if runtime != nil && runtime.database != nil {
 		if err := runtime.database.DeleteSharedDirectory(context.Background(), root); err != nil {
-			fmt.Printf("[file] failed to delete shared directory from DB: %v\n", err)
+			e.log(logger.Warning, "file", "failed to delete shared directory: "+err.Error())
 		}
 	}
 

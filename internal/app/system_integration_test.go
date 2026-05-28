@@ -85,7 +85,7 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 	mockFile := &IntegrationMockFile{}
 	mockUI := &IntegrationMockUI{}
 
-	application := app.NewApp(bus, cry, database, mockNet, mockFile, mockUI)
+	application := app.NewApp(bus, cry, database, mockNet, mockFile, mockUI, nil)
 	application.Startup(context.Background())
 
 	pwd := "safe_password_123"
@@ -140,7 +140,7 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 		newDB, _ := db.NewSQLiteDB(dbFile)
 		newUI := &IntegrationMockUI{}
 
-		newApp := app.NewApp(newBus, newCry, newDB, mockNet, mockFile, newUI)
+		newApp := app.NewApp(newBus, newCry, newDB, mockNet, mockFile, newUI, nil)
 		newApp.Startup(context.Background())
 
 		if err := newApp.Login(pwd); err != nil {

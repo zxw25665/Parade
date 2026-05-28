@@ -10,6 +10,7 @@
     "files": "文件",
     "downloads": "下载",
     "history": "历史",
+    "logs": "日志",
     "collapseLeft": "收起左侧面板",
     "expandLeft": "展开左侧面板",
     "collapseRight": "收起右侧面板",
@@ -108,6 +109,22 @@
     "fetch": "获取",
     "noMessages": "暂无获取的消息",
     "messageCorrupted": "[消息损坏]"
+  },
+  "logs": {
+    "title": "日志",
+    "filterLevel": "级别",
+    "filterSource": "来源",
+    "allSources": "所有来源",
+    "autoScroll": "自动滚动",
+    "clear": "清除",
+    "noLogs": "暂无日志",
+    "levelAll": "全部",
+    "levelTrace": "追踪",
+    "levelDebug": "调试",
+    "levelInfo": "信息",
+    "levelWarning": "警告",
+    "levelError": "错误",
+    "export": "导出"
   },
   "lang": {
     "toggle": "EN / 中"

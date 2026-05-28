@@ -9,6 +9,7 @@ const (
 	TopicFileProgress      = "file:progress"
 	TopicFileCompleted     = "file:completed"
 	TopicDirChanged        = "fs:dir_changed"
+	TopicLogEvent          = "system:log_event"
 )
 
 // ---- Payload 结构定义 (载荷字典) ----
