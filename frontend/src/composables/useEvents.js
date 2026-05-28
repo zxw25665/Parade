@@ -1,5 +1,6 @@
 import { reactive, onMounted, onUnmounted } from 'vue'
 import { EventsOn, EventsOff } from '../lib/wailsjs/runtime/runtime'
+import { addLogEntry } from './useLogStore.js'
 
 const state = reactive({
   peers: [],
@@ -67,10 +68,14 @@ export function useEvents() {
         delete state.downloads[taskId]
       }
     })
+
+    EventsOn('ui_log', (data) => {
+      addLogEntry(data)
+    })
   })
 
   onUnmounted(() => {
-    EventsOff('ui_peer_joined', 'ui_peer_left', 'ui_new_message', 'ui_private_message', 'ui_file_progress', 'ui_file_completed')
+    EventsOff('ui_peer_joined', 'ui_peer_left', 'ui_new_message', 'ui_private_message', 'ui_file_progress', 'ui_file_completed', 'ui_log')
   })
 
   return state

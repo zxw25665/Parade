@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"parade/internal/core/eventbus"
+	"parade/internal/core/logger"
 )
 
 type PeerInfo struct {
@@ -34,6 +35,8 @@ type Discovery struct {
 	iface      *net.Interface
 
 	onPeerDiscovered func(PeerInfo)
+
+	logr logger.Logger
 }
 
 func NewDiscovery(bus eventbus.EventBus, browser ServiceBrowser) *Discovery {
@@ -47,6 +50,28 @@ func NewDiscovery(bus eventbus.EventBus, browser ServiceBrowser) *Discovery {
 		teamHashes:   make(map[string]bool),
 		peerTeams:    make(map[string]map[string]bool),
 		triggerQuery: make(chan struct{}, 1),
+	}
+}
+
+func (d *Discovery) WithLogger(l logger.Logger) *Discovery {
+	d.logr = l
+	return d
+}
+
+func (d *Discovery) log(level logger.LogLevel, source, msg string) {
+	if d.logr != nil {
+		switch level {
+		case logger.Trace:
+			d.logr.Trace(source, msg)
+		case logger.Debug:
+			d.logr.Debug(source, msg)
+		case logger.Info:
+			d.logr.Info(source, msg)
+		case logger.Warning:
+			d.logr.Warn(source, msg)
+		case logger.Error:
+			d.logr.Error(source, msg)
+		}
 	}
 }
 
@@ -236,12 +261,12 @@ func (d *Discovery) runMDNSQuery(ctx context.Context) {
 
 	entries, err := d.browser.Browse(ctx, "_parade._tcp", "local.", iface)
 	if err != nil {
-		fmt.Printf("[mDNS] browse query failed: %v\n", err)
+		d.log(logger.Debug, "discovery", fmt.Sprintf("mDNS browse query failed: %v", err))
 		return
 	}
 
 	if len(entries) == 0 {
-		fmt.Printf("[mDNS] query completed: no _parade._tcp entries found\n")
+		d.log(logger.Debug, "discovery", "mDNS query completed: no _parade._tcp entries found")
 	}
 
 	for _, entry := range entries {
@@ -254,8 +279,8 @@ func (d *Discovery) handleServiceEntry(entry *ServiceEntry) {
 		return
 	}
 
-	fmt.Printf("[mDNS] entry: Name=%q AddrV4=%v Port=%d TXT=%v\n",
-		entry.Name, entry.AddrV4, entry.Port, entry.InfoFields)
+	d.log(logger.Debug, "discovery", fmt.Sprintf("mDNS entry: Name=%q AddrV4=%v Port=%d TXT=%v",
+		entry.Name, entry.AddrV4, entry.Port, entry.InfoFields))
 
 	var pubKey string
 	var entryTeamHashes []string
@@ -296,8 +321,8 @@ func (d *Discovery) handleServiceEntry(entry *ServiceEntry) {
 			}
 		}
 		if !matched {
-			fmt.Printf("[mDNS] filtered: peer %s has no common team (local hashes=%v remote hashes=%v)\n",
-				truncateKey(pubKey), localHashes, entryTeamHashes)
+			d.log(logger.Debug, "discovery", fmt.Sprintf("mDNS filtered: peer %s has no common team (local hashes=%v remote hashes=%v)",
+				truncateKey(pubKey), localHashes, entryTeamHashes))
 			return
 		}
 	}
@@ -313,7 +338,7 @@ func (d *Discovery) handleServiceEntry(entry *ServiceEntry) {
 		return
 	}
 
-	fmt.Printf("[mDNS] discovered: %s @ %s (pubkey=%s)\n", entry.Name, ipAddr, truncateKey(pubKey))
+	d.log(logger.Info, "discovery", fmt.Sprintf("mDNS discovered: %s @ %s (pubkey=%s)", entry.Name, ipAddr, truncateKey(pubKey)))
 
 	peer := PeerInfo{
 		PubKeyBase64: pubKey,

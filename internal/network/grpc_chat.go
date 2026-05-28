@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"parade/internal/core/crypto"
 	"parade/internal/core/eventbus"
+	"parade/internal/core/logger"
 	chatpb "parade/internal/network/pb/chatpb"
 	pb "parade/internal/network/pb"
 )
@@ -65,6 +66,8 @@ type Engine struct {
 	discoveryCtx    context.Context
 	discoveryCancel context.CancelFunc
 	lifecycleWG     sync.WaitGroup
+
+	logr logger.Logger
 }
 
 // ChatServiceImpl 实现 ChatService 的 gRPC 服务。
@@ -87,6 +90,28 @@ func NewEngine(bus eventbus.EventBus, cry crypto.Engine) *Engine {
 	}
 	eng.chatServiceImpl = &ChatServiceImpl{engine: eng}
 	return eng
+}
+
+func (e *Engine) WithLogger(l logger.Logger) *Engine {
+	e.logr = l
+	return e
+}
+
+func (e *Engine) log(level logger.LogLevel, source, msg string) {
+	if e.logr != nil {
+		switch level {
+		case logger.Trace:
+			e.logr.Trace(source, msg)
+		case logger.Debug:
+			e.logr.Debug(source, msg)
+		case logger.Info:
+			e.logr.Info(source, msg)
+		case logger.Warning:
+			e.logr.Warn(source, msg)
+		case logger.Error:
+			e.logr.Error(source, msg)
+		}
+	}
 }
 
 func (e *Engine) Start(port int) error {
@@ -126,7 +151,7 @@ func (e *Engine) Start(port int) error {
 	go func() {
 		defer e.lifecycleWG.Done()
 		if err := e.controlServer.Serve(listener); err != nil && err != grpc.ErrServerStopped {
-			fmt.Printf("gRPC control server error: %v\n", err)
+			e.log(logger.Error, "grpc", fmt.Sprintf("gRPC control server error: %v", err))
 		}
 	}()
 
@@ -146,7 +171,7 @@ func (e *Engine) Start(port int) error {
 		go func() {
 			defer e.lifecycleWG.Done()
 			if err := e.dataServer.Serve(dataListener); err != nil && err != grpc.ErrServerStopped {
-				fmt.Printf("gRPC data server error: %v\n", err)
+				e.log(logger.Error, "grpc", fmt.Sprintf("gRPC data server error: %v", err))
 			}
 		}()
 	}
@@ -154,9 +179,9 @@ func (e *Engine) Start(port int) error {
 	// mDNS: register _parade._tcp service via ServiceBrowser
 	iface, lanIP, err := SelectLANInterface()
 	if err != nil {
-		fmt.Printf("[mDNS] WARNING: %v, discovery may not work\n", err)
+		e.log(logger.Warning, "discovery", fmt.Sprintf("mDNS: %v, discovery may not work", err))
 	} else {
-		fmt.Printf("[mDNS] selected interface %s (%s)\n", iface.Name, lanIP)
+		e.log(logger.Info, "discovery", fmt.Sprintf("mDNS selected interface %s (%s)", iface.Name, lanIP))
 	}
 
 	teamHash := e.crypto.TeamKeyHash()
@@ -177,6 +202,7 @@ func (e *Engine) Start(port int) error {
 
 	browser := NewServiceBrowser()
 	e.discovery = NewDiscovery(e.bus, browser)
+	e.discovery.logr = e.logr
 
 	handle, err := browser.Register(
 		"Parade-"+e.crypto.GetPublicKeyBase64()[:8],
@@ -191,8 +217,8 @@ func (e *Engine) Start(port int) error {
 		return fmt.Errorf("failed to register mDNS service: %w", err)
 	}
 	e.mdnsHandle = handle
-	fmt.Printf("[mDNS] started, advertising %s on %v (team=%s)\n",
-		"_parade._tcp", lanIPs, truncateKey(teamHash))
+	e.log(logger.Info, "discovery", fmt.Sprintf("mDNS started, advertising %s on %v (team=%s)",
+		"_parade._tcp", lanIPs, truncateKey(teamHash)))
 
 	// 启动 Discovery 循环
 	e.discovery.SetLocalPubKey(e.crypto.GetPublicKeyBase64())
@@ -203,9 +229,9 @@ func (e *Engine) Start(port int) error {
 	e.discovery.SetOnPeerDiscovered(func(peer PeerInfo) {
 		go func() {
 			if _, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress); err != nil {
-				fmt.Printf("[mDNS] auto-connect to peer %s failed: %v\n", truncateKey(peer.PubKeyBase64), err)
+				e.log(logger.Warning, "grpc", fmt.Sprintf("mDNS auto-connect to peer %s failed: %v", truncateKey(peer.PubKeyBase64), err))
 			} else {
-				fmt.Printf("[mDNS] auto-connected to peer %s @ %s\n", truncateKey(peer.PubKeyBase64), peer.IPAddress)
+				e.log(logger.Info, "network", fmt.Sprintf("mDNS auto-connected to peer %s @ %s", truncateKey(peer.PubKeyBase64), peer.IPAddress))
 			}
 		}()
 	})
@@ -327,7 +353,7 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 			go func(p PeerInfo) {
 				conn, err := e.getOrDialPeer(p.PubKeyBase64, p.IPAddress)
 				if err != nil {
-					fmt.Printf("failed to dial peer %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to dial peer %s: %v", p.PubKeyBase64, err))
 					return
 				}
 
@@ -337,14 +363,14 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 
 				stream, err := client.StreamChat(ctx)
 				if err != nil {
-					fmt.Printf("failed to create stream with %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to create stream with %s: %v", p.PubKeyBase64, err))
 					return
 				}
 				defer stream.CloseSend()
 
 				// 发送消息
 				if err := stream.Send(envelope); err != nil {
-					fmt.Printf("failed to send to %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to send to %s: %v", p.PubKeyBase64, err))
 					e.removePeerConnection(p.PubKeyBase64)
 					return
 				}
@@ -352,7 +378,7 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 				// 等待确认
 				_, err = stream.Recv()
 				if err != nil {
-					fmt.Printf("failed to receive ack from %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to receive ack from %s: %v", p.PubKeyBase64, err))
 					e.removePeerConnection(p.PubKeyBase64)
 					return
 				}
@@ -412,7 +438,7 @@ func (e *Engine) BroadcastChannel(channelID string, payload []byte) error {
 			go func(p PeerInfo) {
 				conn, err := e.getOrDialPeer(p.PubKeyBase64, p.IPAddress)
 				if err != nil {
-					fmt.Printf("failed to dial peer %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to dial peer %s: %v", p.PubKeyBase64, err))
 					return
 				}
 
@@ -422,14 +448,14 @@ func (e *Engine) BroadcastChannel(channelID string, payload []byte) error {
 
 				stream, err := client.StreamChat(ctx)
 				if err != nil {
-					fmt.Printf("failed to create stream with %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to create stream with %s: %v", p.PubKeyBase64, err))
 					return
 				}
 				defer stream.CloseSend()
 
 				// 发送消息
 				if err := stream.Send(envelope); err != nil {
-					fmt.Printf("failed to send to %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to send to %s: %v", p.PubKeyBase64, err))
 					e.removePeerConnection(p.PubKeyBase64)
 					return
 				}
@@ -437,7 +463,7 @@ func (e *Engine) BroadcastChannel(channelID string, payload []byte) error {
 				// 等待确认
 				_, err = stream.Recv()
 				if err != nil {
-					fmt.Printf("failed to receive ack from %s: %v\n", p.PubKeyBase64, err)
+					e.log(logger.Warning, "grpc", fmt.Sprintf("failed to receive ack from %s: %v", p.PubKeyBase64, err))
 					e.removePeerConnection(p.PubKeyBase64)
 					return
 				}
@@ -472,7 +498,7 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 		// Double encryption: payload is already EncryptPrivate(inner), wrap with EncryptTeam(outer)
 		wrapped, err := e.crypto.EncryptTeam(payload)
 		if err != nil {
-			fmt.Printf("EncryptTeam wrap for private message failed: %v\n", err)
+			e.log(logger.Warning, "chat", fmt.Sprintf("EncryptTeam wrap for private message failed: %v", err))
 			return
 		}
 
@@ -486,7 +512,7 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 
 		conn, err := e.getOrDialPeer(peer.PubKeyBase64, peer.IPAddress)
 		if err != nil {
-			fmt.Printf("failed to dial peer %s: %v\n", peer.PubKeyBase64, err)
+			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to dial peer %s: %v", peer.PubKeyBase64, err))
 			return
 		}
 
@@ -496,14 +522,14 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 
 		stream, err := client.StreamChat(ctx)
 		if err != nil {
-			fmt.Printf("failed to create stream with %s: %v\n", peer.PubKeyBase64, err)
+			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to create stream with %s: %v", peer.PubKeyBase64, err))
 			return
 		}
 		defer stream.CloseSend()
 
 		// 发送消息
 		if err := stream.Send(envelope); err != nil {
-			fmt.Printf("failed to send to %s: %v\n", peer.PubKeyBase64, err)
+			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to send to %s: %v", peer.PubKeyBase64, err))
 			e.removePeerConnection(peer.PubKeyBase64)
 			return
 		}
@@ -511,7 +537,7 @@ func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {
 		// 等待确认
 		_, err = stream.Recv()
 		if err != nil {
-			fmt.Printf("failed to receive ack from %s: %v\n", peer.PubKeyBase64, err)
+			e.log(logger.Warning, "grpc", fmt.Sprintf("failed to receive ack from %s: %v", peer.PubKeyBase64, err))
 			e.removePeerConnection(peer.PubKeyBase64)
 			return
 		}
@@ -533,7 +559,7 @@ func (e *Engine) OnForeground() {
 		return
 	}
 
-	fmt.Println("[network] foreground resume: triggering discovery refresh and peer health checks")
+	e.log(logger.Info, "network", "foreground resume: triggering discovery refresh and peer health checks")
 
 	e.discovery.TriggerQuery()
 
@@ -696,6 +722,7 @@ func (e *Engine) getOrDialPeer(pubKey, ipAddr string) (*grpc.ClientConn, error) 
 	e.sessionMu.Lock()
 	if _, exists := e.peerSessions[pubKey]; !exists {
 		session := NewPeerSession(pubKey, ipAddr, e, conn)
+		session.logr = e.logr
 		e.peerSessions[pubKey] = session
 		session.Start()
 	}
@@ -851,17 +878,17 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 		case 1: // Private: DecryptTeam(outer) → DecryptPrivate(inner)
 			teamPlain, err := cs.engine.crypto.DecryptTeam(envelope.Payload)
 			if err != nil {
-				fmt.Printf("[chat] private message DecryptTeam failed: %v\n", err)
+				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("private message DecryptTeam failed: %v", err))
 				continue
 			}
 			plain, err = cs.engine.crypto.DecryptPrivate(teamPlain, envelope.SenderId)
 			if err != nil {
-				fmt.Printf("[chat] private message DecryptPrivate failed: %v\n", err)
+				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("private message DecryptPrivate failed: %v", err))
 				continue
 			}
 		default: // Type 0 (team) or 99 (test): DecryptTeam only
 			if envelope.Type != 0 && envelope.Type != 99 {
-				fmt.Printf("[chat] warning: unknown envelope type %d\n", envelope.Type)
+				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("warning: unknown envelope type %d", envelope.Type))
 			}
 			var err error
 			if envelope.TeamId != "" {
@@ -870,14 +897,14 @@ func (cs *ChatServiceImpl) StreamChat(stream chatpb.ChatService_StreamChatServer
 				plain, err = cs.engine.crypto.DecryptTeam(envelope.Payload)
 			}
 			if err != nil {
-				fmt.Printf("[chat] DecryptTeam failed: %v\n", err)
+				cs.engine.log(logger.Warning, "chat", fmt.Sprintf("DecryptTeam failed: %v", err))
 				continue
 			}
 		}
 
 		var msg eventbus.MsgReceivedPayload
 		if err := json.Unmarshal(plain, &msg); err != nil {
-			fmt.Printf("[chat] unmarshal error: %v\n", err)
+			cs.engine.log(logger.Warning, "chat", fmt.Sprintf("unmarshal error: %v", err))
 			continue
 		}
 

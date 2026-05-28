@@ -10,6 +10,7 @@
     "files": "Files",
     "downloads": "Downloads",
     "history": "History",
+    "logs": "Logs",
     "collapseLeft": "Collapse left panel",
     "expandLeft": "Expand left panel",
     "collapseRight": "Collapse right panel",
@@ -108,6 +109,22 @@
     "fetch": "Fetch",
     "noMessages": "No messages fetched yet",
     "messageCorrupted": "[message corrupted]"
+  },
+  "logs": {
+    "title": "Logs",
+    "filterLevel": "Level",
+    "filterSource": "Source",
+    "allSources": "All sources",
+    "autoScroll": "Auto-scroll",
+    "clear": "Clear",
+    "noLogs": "No log entries",
+    "levelAll": "All",
+    "levelTrace": "Trace",
+    "levelDebug": "Debug",
+    "levelInfo": "Info",
+    "levelWarning": "Warning",
+    "levelError": "Error",
+    "export": "Export"
   },
   "lang": {
     "toggle": "中 / EN"

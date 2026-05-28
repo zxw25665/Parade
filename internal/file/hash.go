@@ -6,10 +6,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
+
+	"parade/internal/core/logger"
 
 	"github.com/zeebo/blake3"
 )
@@ -40,7 +41,7 @@ func (e *Engine) HashFile(path string) (string, error) {
 		cache, ok := runtime.hashCache[absPath]
 		runtime.cacheMu.RUnlock()
 		if ok && cache.size == info.Size() && cache.modTime.Equal(info.ModTime()) {
-			fingerprint, err := fileFingerprint(file, info.Size())
+			fingerprint, err := e.fileFingerprint(file, info.Size())
 			if err != nil {
 				return "", fmt.Errorf("compute file fingerprint failed: %w", err)
 			}
@@ -53,7 +54,7 @@ func (e *Engine) HashFile(path string) (string, error) {
 		}
 	}
 
-	fingerprint, err := fileFingerprint(file, info.Size())
+	fingerprint, err := e.fileFingerprint(file, info.Size())
 	if err != nil {
 		return "", fmt.Errorf("compute file fingerprint failed: %w", err)
 	}
@@ -84,7 +85,7 @@ func (e *Engine) HashFile(path string) (string, error) {
 	return hashText, nil
 }
 
-func fileFingerprint(file *os.File, size int64) (string, error) {
+func (e *Engine) fileFingerprint(file *os.File, size int64) (string, error) {
 	const sampleSize = 32 * 1024
 
 	hash := blake3.New()
@@ -131,10 +132,10 @@ func fileFingerprint(file *os.File, size int64) (string, error) {
 		binary.LittleEndian.PutUint64(meta[:8], uint64(offset))
 		binary.LittleEndian.PutUint64(meta[8:], uint64(n))
 		if _, err := hash.Write(meta[:]); err != nil {
-			log.Printf("hash write meta at offset %d failed: %v", offset, err)
+			e.log(logger.Error, "file", fmt.Sprintf("hash write meta at offset %d failed: %v", offset, err))
 		}
 		if _, err := hash.Write(buf); err != nil {
-			log.Printf("hash write buf at offset %d failed: %v", offset, err)
+			e.log(logger.Error, "file", fmt.Sprintf("hash write buf at offset %d failed: %v", offset, err))
 		}
 	}
 

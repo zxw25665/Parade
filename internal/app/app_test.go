@@ -75,7 +75,7 @@ func setup(t *testing.T) (*App, *MockNetwork, *MockUI, func()) {
 	file := &MockFile{}
 	ui := &MockUI{}
 
-	app := NewApp(eb, cr, d, net, file, ui)
+	app := NewApp(eb, cr, d, net, file, ui, nil)
 	app.Startup(context.Background())
 
 	return app, net, ui, func() {
