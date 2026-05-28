@@ -329,6 +329,31 @@
       appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%238c8273'/%3E%3C/svg%3E");
       background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px;
     }
+
+    /* --- Log Panel --- */
+    .log-panel { display: flex; flex-direction: column; gap: 4px; }
+    .log-list {
+      height: 300px; overflow-y: auto;
+      font-family: var(--font-mono); font-size: 11px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-surface);
+    }
+    .log-entry {
+      padding: 2px 6px; display: flex; gap: 6px; align-items: baseline;
+      white-space: nowrap; border-bottom: 0.5px solid var(--color-divider);
+    }
+    .log-entry:last-child { border-bottom: none; }
+    .log-entry:hover { background: var(--color-surface-hover); }
+    .log-entry.log-level-5 { background: var(--color-danger-muted); }
+    .log-entry.log-level-4 { color: var(--color-danger); }
+    .log-entry.log-level-2, .log-entry.log-level-1 { color: var(--color-text-dim); opacity: 0.6; }
+    .log-time { color: var(--color-text-dim); min-width: 75px; flex-shrink: 0; }
+    .log-level-badge { min-width: 55px; flex-shrink: 0; text-align: center; }
+    .log-source { min-width: 55px; flex-shrink: 0; text-align: center; }
+    .log-msg { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--color-text); }
+    .log-entry.log-level-5 .log-msg,
+    .log-entry.log-level-4 .log-msg { font-weight: 500; }
   </style>
 </head>
 <body>

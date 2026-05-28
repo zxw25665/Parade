@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/mdns"
+	"parade/internal/core/logger"
 )
 
 const queryInterval = 5 * time.Second
@@ -29,7 +30,31 @@ const queryInterval = 5 * time.Second
 //   4. Careful handling of DNS_REQUEST_PENDING and callback thread safety
 //
 // This is a non-trivial syscall binding effort best done as a focused task.
-type windowsBrowser struct{}
+type windowsBrowser struct {
+	logr logger.Logger
+}
+
+func (b *windowsBrowser) WithLogger(l logger.Logger) *windowsBrowser {
+	b.logr = l
+	return b
+}
+
+func (b *windowsBrowser) log(level logger.LogLevel, source, msg string) {
+	if b.logr != nil {
+		switch level {
+		case logger.Trace:
+			b.logr.Trace(source, msg)
+		case logger.Debug:
+			b.logr.Debug(source, msg)
+		case logger.Info:
+			b.logr.Info(source, msg)
+		case logger.Warning:
+			b.logr.Warn(source, msg)
+		case logger.Error:
+			b.logr.Error(source, msg)
+		}
+	}
+}
 
 func init() {
 	NewServiceBrowser = func() ServiceBrowser {
@@ -57,7 +82,7 @@ func (b *windowsBrowser) Browse(ctx context.Context, service string, domain stri
 
 	go func() {
 		if err := mdns.Query(params); err != nil {
-			fmt.Printf("[mDNS] Windows browse query failed: %v\n", err)
+			b.log(logger.Warning, "discovery", fmt.Sprintf("mDNS Windows browse query failed: %v", err))
 			return
 		}
 		close(entriesCh)

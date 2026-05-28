@@ -15,6 +15,7 @@ import (
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
+	"parade/internal/core/logger"
 	"parade/internal/file"
 	"parade/internal/network"
 )
@@ -44,9 +45,16 @@ func main() {
 	}
 	defer database.Close()
 
+	logBroker, err := logger.NewLogBroker("./.parade.log", 5000)
+	if err != nil {
+		log.Fatalf("Failed to create log broker: %v", err)
+	}
+	defer logBroker.Close()
+
 	fileEngine := file.NewEngine().
 		WithDatabase(database).
-		WithEventBus(eventBus)
+		WithEventBus(eventBus).
+		WithLogger(logBroker)
 	if err := fileEngine.LoadSharedDirectories(); err != nil {
 		fmt.Printf("failed to load shared directories: %v\n", err)
 	}
@@ -54,11 +62,12 @@ func main() {
 
 	netEngine := network.NewEngine(eventBus, cry)
 	netEngine.AttachFileEngine(fileEngine)
+	netEngine.WithLogger(logBroker)
 	defer netEngine.Stop()
 
 	wailsUI := app.NewWailsUI()
 
-	appInstance = app.NewApp(eventBus, cry, database, netEngine, fileEngine, wailsUI)
+	appInstance = app.NewApp(eventBus, cry, database, netEngine, fileEngine, wailsUI, logBroker)
 
 	err = wails.Run(&options.App{
 		Title:  "Parade (游行)",
