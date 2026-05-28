@@ -181,6 +181,17 @@ func (d *Discovery) GetPeersForTeam(teamHash string) []PeerInfo {
 	return out
 }
 
+// AddPeerTeamHash records that a peer belongs to a specific team hash,
+// so that GetPeersForTeam can include manually-connected peers.
+func (d *Discovery) AddPeerTeamHash(pubKey, teamHash string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.peerTeams[pubKey] == nil {
+		d.peerTeams[pubKey] = make(map[string]bool)
+	}
+	d.peerTeams[pubKey][teamHash] = true
+}
+
 func (d *Discovery) SetIface(iface *net.Interface) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
