@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"parade/internal/core/logger"
 )
 
 const (
@@ -35,6 +36,8 @@ type PeerSession struct {
 	wg     sync.WaitGroup
 
 	reconnecting atomic.Bool
+
+	logr logger.Logger
 }
 
 func NewPeerSession(pubKey, ipAddr string, eng *Engine, controlConn *grpc.ClientConn) *PeerSession {
@@ -46,6 +49,28 @@ func NewPeerSession(pubKey, ipAddr string, eng *Engine, controlConn *grpc.Client
 		controlConn: controlConn,
 		ctx:         ctx,
 		cancel:      cancel,
+	}
+}
+
+func (ps *PeerSession) WithLogger(l logger.Logger) *PeerSession {
+	ps.logr = l
+	return ps
+}
+
+func (ps *PeerSession) log(level logger.LogLevel, source, msg string) {
+	if ps.logr != nil {
+		switch level {
+		case logger.Trace:
+			ps.logr.Trace(source, msg)
+		case logger.Debug:
+			ps.logr.Debug(source, msg)
+		case logger.Info:
+			ps.logr.Info(source, msg)
+		case logger.Warning:
+			ps.logr.Warn(source, msg)
+		case logger.Error:
+			ps.logr.Error(source, msg)
+		}
 	}
 }
 
@@ -126,8 +151,8 @@ func (ps *PeerSession) reconnect() bool {
 
 		newConn, err := ps.dialControl()
 		if err != nil {
-			fmt.Printf("[PeerSession] reconnect to %s failed: %v, retrying in %v\n",
-				truncateKey(ps.pubKey), err, backoff)
+			ps.log(logger.Warning, "peer", fmt.Sprintf("reconnect to %s failed: %v, retrying in %v",
+				truncateKey(ps.pubKey), err, backoff))
 			select {
 			case <-ps.ctx.Done():
 				return false
@@ -165,7 +190,7 @@ func (ps *PeerSession) reconnect() bool {
 			IPAddress:    ps.ipAddr,
 		})
 
-		fmt.Printf("[PeerSession] reconnected to %s\n", truncateKey(ps.pubKey))
+		ps.log(logger.Info, "peer", fmt.Sprintf("reconnected to %s", truncateKey(ps.pubKey)))
 		return true
 	}
 }

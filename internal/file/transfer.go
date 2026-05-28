@@ -13,6 +13,7 @@ import (
 
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
+	"parade/internal/core/logger"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -50,6 +51,17 @@ func (e *Engine) WithEventBus(bus eventbus.EventBus) *Engine {
 	return e
 }
 
+// WithLogger 注入结构化日志器。
+func (e *Engine) WithLogger(l logger.Logger) *Engine {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runtime == nil {
+		e.runtime = newRuntimeState()
+	}
+	e.runtime.logr = l
+	return e
+}
+
 // PrepareDownload 根据 file_logs 判断是否断点续传，并返回起始偏移量。
 func (e *Engine) PrepareDownload(ctx context.Context, taskID, filePath, peerID string, totalSize int64) (int64, error) {
 	if totalSize < 0 {
@@ -58,6 +70,8 @@ func (e *Engine) PrepareDownload(ctx context.Context, taskID, filePath, peerID s
 	if taskID == "" {
 		return 0, errors.New("task id is empty")
 	}
+
+	e.log(logger.Debug, "file", fmt.Sprintf("prepare download: task=%s offset=seek filePath=%s", taskID, filePath))
 
 	database := e.getDB()
 	if database == nil {
@@ -132,6 +146,8 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 		return errors.New("total size must be >= 0")
 	}
 
+	e.log(logger.Debug, "file", fmt.Sprintf("save chunk: task=%s offset=%d size=%d", taskID, offset, len(data)))
+
 	lock := e.getTaskLock(taskID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -205,6 +221,7 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 		_ = os.Remove(bitmapPath)
 		e.cleanupTracker(taskID)
 		if err := os.Rename(tmpPath, targetPath); err != nil {
+			e.log(logger.Warning, "file", fmt.Sprintf("download finalize failed: task=%s error=%v", taskID, err))
 			if os.IsExist(err) || os.IsPermission(err) {
 				_ = os.Remove(targetPath)
 				if err2 := os.Rename(tmpPath, targetPath); err2 != nil {
@@ -214,6 +231,7 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 				return fmt.Errorf("finalize file failed: %w", err)
 			}
 		}
+		e.log(logger.Info, "file", fmt.Sprintf("download completed: %s", taskID))
 		e.publishCompleted(taskID)
 	}
 	return nil
@@ -228,6 +246,7 @@ func (e *Engine) SaveChunk(ctx context.Context, taskID, targetPath, peerID strin
 type runtimeState struct {
 	database      db.Database
 	bus           eventbus.EventBus
+	logr          logger.Logger
 	chunkPool     sync.Pool
 	readLimiter   chan struct{}
 	cacheMu       sync.RWMutex
@@ -276,6 +295,25 @@ func (e *Engine) getDB() db.Database {
 		return nil
 	}
 	return runtime.database
+}
+
+func (e *Engine) log(level logger.LogLevel, source, msg string) {
+	runtime := e.getRuntime()
+	if runtime == nil || runtime.logr == nil {
+		return
+	}
+	switch level {
+	case logger.Trace:
+		runtime.logr.Trace(source, msg)
+	case logger.Debug:
+		runtime.logr.Debug(source, msg)
+	case logger.Info:
+		runtime.logr.Info(source, msg)
+	case logger.Warning:
+		runtime.logr.Warn(source, msg)
+	case logger.Error:
+		runtime.logr.Error(source, msg)
+	}
 }
 
 // getTaskLock 返回指定 taskID 的互斥锁，确保同一 task 的 SaveChunk 调用串行化。
