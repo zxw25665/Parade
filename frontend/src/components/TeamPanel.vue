@@ -31,7 +31,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, inject } from 'vue'
+import { ref, onMounted, inject, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
 
@@ -48,6 +48,10 @@ const successMsg = ref('')
 onMounted(async () => {
   if (!store.loggedIn) return
   await refreshTeams()
+})
+
+watch(() => store.loggedIn, (newVal) => {
+  if (newVal) refreshTeams()
 })
 
 async function refreshTeams() {

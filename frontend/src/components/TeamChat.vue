@@ -14,9 +14,12 @@
 
     <div class="list" ref="msgList">
       <div v-if="filteredMessages.length === 0" style="font-size:13px;color:#8a8aaf">{{ $t('chat.noMessages') }}</div>
-      <div class="list-item" v-for="msg in filteredMessages" :key="msg.id" :style="{ color: msg.direction === 'send' ? '#4ecca3' : '#e0e0e0' }">
-        <div style="font-size:11px;color:#8a8aaf">{{ msg.sender }} · {{ msg.hlc }}</div>
-        <div>{{ msg.content }}</div>
+      <div class="message-item" v-for="msg in filteredMessages" :key="msg.id" :style="{ color: msg.direction === 'send' ? '#4ecca3' : '#e0e0e0' }">
+        <div>
+          <span class="message-sender">{{ msg.sender && msg.sender.length > 12 ? msg.sender.slice(0, 8) + '...' : msg.sender }}</span>
+          <span class="message-meta">{{ msg.hlc }}</span>
+        </div>
+        <div class="message-body">{{ msg.content }}</div>
       </div>
     </div>
 
