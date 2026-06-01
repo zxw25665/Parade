@@ -9,9 +9,12 @@
     </div>
     <div class="list" style="max-height:250px">
       <div v-if="messages.length === 0" style="font-size:13px;color:#8a8aaf">{{ $t('chat.noMessages') }}</div>
-      <div class="list-item" v-for="msg in messages" :key="msg.id" :style="{ color: msg.direction === 'send' ? '#4ecca3' : '#e0e0e0' }">
-        <div style="font-size:11px;color:#8a8aaf">{{ msg.senderId || $t('chat.me') }} · {{ msg.hlc }}</div>
-        <div>{{ msg.content }}</div>
+      <div class="message-item" v-for="msg in messages" :key="msg.id" :style="{ color: msg.direction === 'send' ? '#4ecca3' : '#e0e0e0' }">
+        <div>
+          <span class="message-sender">{{ msg.senderId ? (msg.senderId.length > 12 ? msg.senderId.slice(0, 8) + '...' : msg.senderId) : $t('chat.me') }}</span>
+          <span class="message-meta">{{ msg.hlc }}</span>
+        </div>
+        <div class="message-body">{{ msg.content }}</div>
       </div>
     </div>
     <div class="row" style="margin-top:12px">
@@ -48,7 +51,18 @@ async function doSend() {
   if (!text.value.trim() || !targetPeer.value) return
   loading.value = true; errorMsg.value = ''
   try {
-    await sendPrivateChat(targetPeer.value, text.value)
+    const content = text.value
+    await sendPrivateChat(targetPeer.value, content)
+
+    state.privateMessages.unshift({
+      id: Date.now().toString(),
+      hlc: new Date().toISOString(),
+      senderId: '',
+      receiverId: targetPeer.value,
+      content: content,
+      direction: 'send'
+    })
+
     text.value = ''
   } catch (e) {
     errorMsg.value = e.toString()
