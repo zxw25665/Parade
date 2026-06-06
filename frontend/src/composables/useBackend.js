@@ -11,24 +11,19 @@ import {
   GetPeers,
   SendTeamChat,
   SendPrivateChat,
-  SendChannelChat,
-  CreateChannel,
-  ListChannels,
-  JoinChannel,
-  LeaveChannel,
   ShareDirectory,
   UnshareDirectory,
   GetDirectoryChildren,
   GetRemoteDirectoryChildren,
   StartDownload,
   GetRecentHistory,
-  GetRecentHistoryByChannel,
   CreateShareGroup,
   ListShareGroups,
   AddDirectoryToShareGroup,
   RemoveDirectoryFromShareGroup,
   DeleteShareGroup,
-  GetShareGroupDirs
+  GetShareGroupDirs,
+  GetDefaultDownloadDir
 } from '../lib/wailsjs/go/app/App'
 import { addLogEntry } from './useLogStore.js'
 
@@ -92,24 +87,19 @@ export function useBackend() {
     getPeers: wrapIPC('getPeers', GetPeers),
     sendTeamChat: wrapIPC('sendTeamChat', SendTeamChat),
     sendPrivateChat: wrapIPC('sendPrivateChat', SendPrivateChat),
-    sendChannelChat: wrapIPC('sendChannelChat', SendChannelChat),
-    createChannel: wrapIPC('createChannel', CreateChannel),
-    listChannels: wrapIPC('listChannels', ListChannels),
-    joinChannel: wrapIPC('joinChannel', JoinChannel),
-    leaveChannel: wrapIPC('leaveChannel', LeaveChannel),
     shareDirectory: wrapIPC('shareDirectory', ShareDirectory),
     unshareDirectory: wrapIPC('unshareDirectory', UnshareDirectory),
     getDirectoryChildren: wrapIPC('getDirectoryChildren', GetDirectoryChildren),
     getRemoteDirectoryChildren: wrapIPC('getRemoteDirectoryChildren', GetRemoteDirectoryChildren),
     startDownload: wrapIPC('startDownload', StartDownload),
     getRecentHistory: wrapIPC('getRecentHistory', GetRecentHistory),
-    getRecentHistoryByChannel: wrapIPC('getRecentHistoryByChannel', GetRecentHistoryByChannel),
     connectToPeer: wrapIPC('connectToPeer', connectToPeer),
     createShareGroup: wrapIPC('createShareGroup', CreateShareGroup),
     listShareGroups: wrapIPC('listShareGroups', ListShareGroups),
     addDirectoryToShareGroup: wrapIPC('addDirectoryToShareGroup', AddDirectoryToShareGroup),
     removeDirectoryFromShareGroup: wrapIPC('removeDirectoryFromShareGroup', RemoveDirectoryFromShareGroup),
     deleteShareGroup: wrapIPC('deleteShareGroup', DeleteShareGroup),
-    getShareGroupDirs: wrapIPC('getShareGroupDirs', GetShareGroupDirs)
+    getShareGroupDirs: wrapIPC('getShareGroupDirs', GetShareGroupDirs),
+    getDefaultDownloadDir: wrapIPC('getDefaultDownloadDir', GetDefaultDownloadDir)
   }
 }

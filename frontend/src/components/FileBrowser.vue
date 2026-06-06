@@ -118,7 +118,7 @@
 </template>
 
 <script setup>
-import { ref, computed, inject } from 'vue'
+import { ref, computed, inject, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
 
@@ -129,7 +129,8 @@ const {
   unshareDirectory,
   getDirectoryChildren,
   getRemoteDirectoryChildren,
-  startDownload
+  startDownload,
+  getDefaultDownloadDir
 } = useBackend()
 
 const state = inject('events')
@@ -144,9 +145,18 @@ const sharedDirs = ref([])
 const sharePath = ref('')
 const downloadTarget = ref(null)
 const localSavePath = ref('')
+const downloadDir = ref('/tmp')
 const loading = ref(false)
 const errorMsg = ref('')
 const successMsg = ref('')
+
+onMounted(async () => {
+  try {
+    downloadDir.value = await getDefaultDownloadDir()
+  } catch {
+    // use /tmp fallback
+  }
+})
 
 function normalizeEntry(entry) {
   return {
@@ -261,14 +271,17 @@ async function doBrowseUp() {
 
 function doDownload(entry) {
   downloadTarget.value = entry
-  localSavePath.value = '/tmp/' + entry.name
+  localSavePath.value = downloadDir.value + '/' + entry.name
 }
 
 async function doStartDownload() {
-  if (!downloadTarget.value || !browsePeer.value || !localSavePath.value) return
+  if (!downloadTarget.value || !browsePeer.value || !localSavePath.value) {
+    errorMsg.value = 'DEBUG: blocked - dT=' + !!downloadTarget.value + ' peer=' + !!browsePeer.value + ' path=' + !!localSavePath.value
+    return
+  }
   loading.value = true
   errorMsg.value = ''
-  successMsg.value = ''
+  successMsg.value = 'DEBUG: calling startDownload(' + browsePeer.value.slice(0,8) + '..., ' + downloadTarget.value.path + ', ' + localSavePath.value + ')'
   const vpath = downloadTarget.value.path
   try {
     await startDownload(browsePeer.value, vpath, localSavePath.value)

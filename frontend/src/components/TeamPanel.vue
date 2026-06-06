@@ -1,10 +1,12 @@
 <template>
     <div v-if="!store.loggedIn" class="error" style="margin-bottom:8px">{{ $t('team.mustLogin') }}</div>
     <div v-else>
-      <div class="row" style="margin-bottom:12px">
-        <input v-model="teamName" :placeholder="$t('team.teamNameOptional')" style="flex:1" />
-        <input v-model="teamSecret" type="password" :placeholder="$t('team.teamSecret')" style="flex:1" @keyup.enter="doJoin" />
-        <button @click="doJoin" :disabled="!teamSecret || loading">{{ $t('team.joinCreate') }}</button>
+      <div style="margin-bottom:12px">
+        <div class="row" style="margin-bottom:8px">
+          <input v-model="teamName" :placeholder="$t('team.teamNameOptional')" style="flex:1" />
+          <input v-model="teamSecret" type="password" :placeholder="$t('team.teamSecret')" style="flex:1" @keyup.enter="doJoin" />
+        </div>
+        <button @click="doJoin" :disabled="!teamSecret || loading" style="width:100%">{{ $t('team.joinCreate') }}</button>
       </div>
 
       <div v-if="store.teams.length > 0">

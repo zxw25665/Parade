@@ -230,10 +230,10 @@
 .panel-section-body {
     padding: 0 8px 8px;
     transition: max-height var(--transition-slow), opacity var(--transition-normal);
-    overflow-x: auto;
+    overflow: hidden auto;
 }
-.panel-section-body.collapsed { max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; overflow-x: hidden; }
-    .panel-section-body.open { max-height: 2000px; opacity: 1; }
+.panel-section-body.collapsed { max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; overflow: hidden hidden; }
+    .panel-section-body.open { max-height: 60vh; opacity: 1; }
 
     /* --- Center (Chat) Panel --- */
     .center-panel {
