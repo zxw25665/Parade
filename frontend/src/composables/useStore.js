@@ -7,8 +7,6 @@ const store = reactive({
   teamJoined: false,
   teams: [],
   activeTeamId: '',
-  channels: [],
-  activeChannelId: '',
   peerTests: {}
 })
 

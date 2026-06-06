@@ -671,6 +671,16 @@ func (a *App) StartDownload(targetPubKey, virtualPath, localSavePath string) err
 	return err
 }
 
+func (a *App) GetDefaultDownloadDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return os.TempDir()
+	}
+	dir := filepath.Join(home, "Downloads")
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
 func (a *App) GetRecentHistory(limit, offset int) ([]map[string]interface{}, error) {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("GetRecentHistory called (limit=%d, offset=%d)", limit, offset))
 	activeTeam := a.crypto.GetActiveTeam()

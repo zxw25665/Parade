@@ -10,7 +10,7 @@ message Envelope {
   string signature   = 3;
   int32  type        = 4;  // 0=team, 1=private, 2=file-browse-req, 3=file-browse-resp,
                             // 4=file-meta-req, 5=file-meta-resp, 6=file-download-req, 
-                            // 7=file-chunk, 8=peer-info-exchange, 99=test
+                            // 7=file-chunk, 8=peer-info-exchange, 9=heartbeat, 99=test
   string receiver_id = 5;  // empty for team, target pubkey for private
   string team_id      = 6;  // team scope identifier, empty for default team
   string channel_id   = 7;  // empty for team-wide, channel ID for channel messages

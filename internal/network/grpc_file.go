@@ -125,11 +125,12 @@ func (s *FileService) DownloadFile(req *pb.FileRequest, stream pb.FileTransferSe
 		return errors.New("offset must be >= 0")
 	}
 
-	cleanPath := filepath.Clean(req.GetFilePath())
+	cleanPath := filepath.ToSlash(filepath.Clean(req.GetFilePath()))
 	sharedRoots := s.fileEngine.GetSharedRoots()
 	allowed := false
 	for _, root := range sharedRoots {
-		if strings.HasPrefix(cleanPath, root+string(os.PathSeparator)) || cleanPath == root {
+		prefix := strings.TrimRight(filepath.ToSlash(root), "/") + "/"
+		if strings.HasPrefix(cleanPath, prefix) || cleanPath == prefix[:len(prefix)-1] {
 			allowed = true
 			break
 		}
@@ -198,11 +199,12 @@ func (s *FileService) BrowseDirectory(ctx context.Context, req *pb.BrowseRequest
 		return &pb.BrowseResponse{Path: "", Entries: entries}, nil
 	}
 
-	absPath := filepath.Clean(path)
+	absPath := filepath.ToSlash(filepath.Clean(path))
 	sharedRoots := s.fileEngine.GetSharedRoots()
 	allowed := false
 	for _, root := range sharedRoots {
-		if strings.HasPrefix(absPath, root+string(os.PathSeparator)) || absPath == root {
+		prefix := strings.TrimRight(filepath.ToSlash(root), "/") + "/"
+		if strings.HasPrefix(absPath, prefix) || absPath == prefix[:len(prefix)-1] {
 			allowed = true
 			break
 		}

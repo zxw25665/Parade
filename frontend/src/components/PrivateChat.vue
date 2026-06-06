@@ -7,7 +7,7 @@
         </option>
       </select>
     </div>
-    <div class="list" style="max-height:250px">
+    <div class="list">
       <div v-if="messages.length === 0" style="font-size:13px;color:#8a8aaf">{{ $t('chat.noMessages') }}</div>
       <div class="message-item" v-for="msg in messages" :key="msg.id" :style="{ color: msg.direction === 'send' ? '#4ecca3' : '#e0e0e0' }">
         <div>
