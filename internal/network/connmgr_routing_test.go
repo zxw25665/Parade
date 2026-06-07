@@ -52,7 +52,7 @@ func TestBroadcastTeam_NoPeers(t *testing.T) {
 	msg := eventbus.MsgReceivedPayload{Content: []byte("hello"), Type: 0, SenderID: "test-sender"}
 	jsonPayload, _ := json.Marshal(msg)
 
-	err := cm.BroadcastTeam("test-pubkey", jsonPayload)
+	err := cm.BroadcastTeam("test-pubkey", "test-team", jsonPayload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestBroadcastTeam_WithPeer(t *testing.T) {
 	msg := eventbus.MsgReceivedPayload{Content: []byte("hello"), Type: 0}
 	jsonPayload, _ := json.Marshal(msg)
 
-	cm.BroadcastTeam("test-pubkey", jsonPayload)
+	cm.BroadcastTeam("test-pubkey", "test-team", jsonPayload)
 
 	select {
 	case env := <-sendCh:

@@ -9,14 +9,17 @@ import (
 type NetworkEngine interface {
 	Start(port int) error
 	Stop() error
-	BroadcastTeam(payload []byte) error                       // 局域网广播群聊/信令
-	BroadcastChannel(channelID string, payload []byte) error  // 局域网广播频道消息
-	UnicastPrivate(targetPubKey string, payload []byte) error // 定点私聊
-	Peers() []map[string]string                               // 返回已发现节点的公钥和IP
+	BroadcastTeam(payload []byte) error
+	UnicastPrivate(targetPubKey string, payload []byte) error
+	Peers() []map[string]string
 	StartDownload(targetPubKey, virtualPath, localSavePath string) error
-	ConnectToPeer(ipAddress string) (*network.PeerConnectResult, error) // 三阶段直连测试
+	ConnectToPeer(ipAddress string) (*network.PeerConnectResult, error)
 	BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error)
-	OnForeground() // 前台恢复时刷新发现和连接状态
+	OnForeground()
+	SendConvSyncRequest(targetPubKey, convID, sinceHLC string) error
+	SendConvSyncResponse(targetPubKey, convID string, messagesJSON []byte) error
+	SavePeers() error
+	PeersWithStatus() []network.PeerStatus
 }
 
 // FileEngine 定义了文件层的行为契约

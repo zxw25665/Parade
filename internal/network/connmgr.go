@@ -65,6 +65,12 @@ type ConnMgr struct {
 	pendingReqs   map[string]chan []byte
 	pendingReqsMu sync.Mutex
 
+	// flood dedup: recently forwarded message HLCs
+	recentHLCs   map[string]time.Time
+	recentHLCsMu sync.Mutex
+
+	stopCh chan struct{}
+
 	discovery *Discovery
 }
 
@@ -72,14 +78,34 @@ func NewConnMgr(bus EventPublisher, crypto CryptoOps, logr LogSink, controlPort 
 	cm := &ConnMgr{
 		peers:       make(map[string]*PeerConn),
 		pendingReqs: make(map[string]chan []byte),
+		recentHLCs:  make(map[string]time.Time),
 		crypto:      crypto,
 		bus:         bus,
 		logr:        logr,
 		controlPort: controlPort,
 		discovery:   NewDiscovery(bus),
+		stopCh:      make(chan struct{}),
 	}
 	cm.discovery.WithLogger(logr)
+	go cm.runStatusTicker()
 	return cm
+}
+
+func (cm *ConnMgr) runStatusTicker() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-cm.stopCh:
+			return
+		case <-ticker.C:
+			cm.discovery.CheckTimeouts(45*time.Second, 0)
+		}
+	}
+}
+
+func (cm *ConnMgr) Stop() {
+	close(cm.stopCh)
 }
 
 // AttachFileEngine sets the file transfer engine on the connection manager.
@@ -110,6 +136,7 @@ func (cm *ConnMgr) GetOrDial(pubKey, ipAddr string) (*PeerConn, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	// Check again under write lock — another goroutine may have completed the dial
 	oldPc := cm.peers[pubKey]
 	if oldPc != nil {
 		oldPc.mu.Lock()
@@ -118,8 +145,9 @@ func (cm *ConnMgr) GetOrDial(pubKey, ipAddr string) (*PeerConn, error) {
 			return oldPc, nil
 		}
 		oldPc.mu.Unlock()
-		// Don't Close() — old peer might be incoming-only without cancel/conn
 	}
+
+	cm.logr.Debug("dial", fmt.Sprintf("GetOrDial: dialing %s at %s:%d", truncateKey(pubKey), ipAddr, cm.controlPort))
 
 	target := fmt.Sprintf("%s:%d", ipAddr, cm.controlPort)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -193,6 +221,7 @@ func (cm *ConnMgr) GetOrDial(pubKey, ipAddr string) (*PeerConn, error) {
 	}
 
 	cm.peers[pubKey] = pc
+	cm.logr.Debug("dial", fmt.Sprintf("GetOrDial: connected to %s at %s:%d", truncateKey(pubKey), ipAddr, cm.controlPort))
 	return pc, nil
 }
 
@@ -239,20 +268,24 @@ func (cm *ConnMgr) SendViaIncoming(pubKey string, envelope *chatpb.Envelope) boo
 	pc, exists := cm.peers[pubKey]
 	cm.mu.RUnlock()
 	if !exists {
+		cm.logr.Debug("conn", fmt.Sprintf("SendViaIncoming: peer %s not in peers map", truncateKey(pubKey)))
 		return false
 	}
 	pc.incomingMu.Lock()
 	stream := pc.incoming
 	pc.incomingMu.Unlock()
 	if stream == nil {
+		cm.logr.Debug("conn", fmt.Sprintf("SendViaIncoming: no incoming stream for %s", truncateKey(pubKey)))
 		return false
 	}
 	if err := stream.Send(envelope); err != nil {
 		pc.incomingMu.Lock()
 		pc.incoming = nil
 		pc.incomingMu.Unlock()
+		cm.logr.Debug("conn", fmt.Sprintf("SendViaIncoming: stream.Send failed for %s: %v", truncateKey(pubKey), err))
 		return false
 	}
+	cm.logr.Trace("conn", fmt.Sprintf("SendViaIncoming: sent type=%d to %s", envelope.Type, truncateKey(pubKey)))
 	return true
 }
 
@@ -262,12 +295,15 @@ func (cm *ConnMgr) SendViaChannel(pubKey string, envelope *chatpb.Envelope) bool
 	pc, exists := cm.peers[pubKey]
 	cm.mu.RUnlock()
 	if !exists || pc.sendCh == nil {
+		cm.logr.Debug("conn", fmt.Sprintf("SendViaChannel: no channel for %s", truncateKey(pubKey)))
 		return false
 	}
 	select {
 	case pc.sendCh <- envelope:
+		cm.logr.Trace("conn", fmt.Sprintf("SendViaChannel: sent type=%d to %s", envelope.Type, truncateKey(pubKey)))
 		return true
 	default:
+		cm.logr.Warn("conn", fmt.Sprintf("SendViaChannel: sendCh full for %s", truncateKey(pubKey)))
 		return false
 	}
 }
@@ -286,6 +322,21 @@ func (cm *ConnMgr) Peers() []PeerInfo {
 	return cm.discovery.Snapshot()
 }
 
+func (cm *ConnMgr) isPeerOffline(pubKey string) bool {
+	cm.mu.RLock()
+	pc, inPeers := cm.peers[pubKey]
+	cm.mu.RUnlock()
+	if inPeers && pc != nil {
+		return false
+	}
+	for _, s := range cm.discovery.ListWithStatus() {
+		if s.PubKeyBase64 == pubKey {
+			return s.Status != PeerStatusOnline
+		}
+	}
+	return false
+}
+
 // GetPeer looks up a peer by public key.
 func (cm *ConnMgr) GetPeer(pubKey string) (PeerInfo, bool) {
 	return cm.discovery.GetPeerByPubKey(pubKey)
@@ -293,7 +344,33 @@ func (cm *ConnMgr) GetPeer(pubKey string) (PeerInfo, bool) {
 
 // UpsertPeer adds or updates a peer in the discovery table.
 func (cm *ConnMgr) UpsertPeer(peer PeerInfo) {
+	_, existed := cm.discovery.GetPeerByPubKey(peer.PubKeyBase64)
 	cm.discovery.UpsertPeer(peer)
+	if !existed && peer.PubKeyBase64 != "" && peer.PubKeyBase64 != cm.crypto.GetPublicKeyBase64() {
+		_ = cm.discovery.SavePeers(PeersFile)
+		cm.sendFullPeerList(peer.PubKeyBase64)
+		cm.BroadcastPeerInfo(peer)
+	}
+}
+
+func (cm *ConnMgr) sendFullPeerList(targetPubKey string) {
+	allPeers := cm.discovery.Snapshot()
+	myPub := cm.crypto.GetPublicKeyBase64()
+	peerList := make([]PeerInfo, 0, len(allPeers))
+	for _, p := range allPeers {
+		if p.PubKeyBase64 != targetPubKey && p.PubKeyBase64 != myPub {
+			peerList = append(peerList, p)
+		}
+	}
+	if len(peerList) > 0 {
+		payload, _ := json.Marshal(peerList)
+		env := &chatpb.Envelope{
+			Type: 8, SenderId: myPub, Payload: payload, TeamId: cm.crypto.GetActiveTeam(),
+		}
+		if !cm.SendViaIncoming(targetPubKey, env) {
+			cm.SendViaChannel(targetPubKey, env)
+		}
+	}
 }
 
 // AddPeerTeam records that a peer belongs to a specific team hash.
@@ -390,9 +467,10 @@ func (cm *ConnMgr) DownloadFileViaTunnel(targetPubKey, taskID, filePath string, 
 	}
 }
 
-// RefreshSeen updates the last-seen timestamp for a peer.
+// RefreshSeen updates the last-seen timestamp and heartbeat state for a peer.
 func (cm *ConnMgr) RefreshSeen(pubKey string) {
 	cm.discovery.RefreshLastSeen(pubKey)
+	cm.discovery.MarkHeartbeat(pubKey)
 }
 
 func (cm *ConnMgr) removePeer(pubKey string) {
@@ -405,14 +483,15 @@ func (cm *ConnMgr) removePeer(pubKey string) {
 	if exists {
 		pc.Close()
 	}
+	// Keep peer in discovery for future reconnection; persist on explicit removal only
 }
 
 // BroadcastTeam sends a team message to all discovered peers.
 // If no peers exist, decrypts and self-publishes to the event bus.
-func (cm *ConnMgr) BroadcastTeam(myPubKey string, payload []byte) error {
+func (cm *ConnMgr) BroadcastTeam(myPubKey string, teamID string, payload []byte) error {
 	peers := cm.discovery.Snapshot()
 	if len(peers) == 0 {
-		plain, err := cm.crypto.DecryptTeam(payload)
+		plain, err := cm.crypto.DecryptTeamForTeam(teamID, payload)
 		if err != nil {
 			return err
 		}
@@ -420,6 +499,7 @@ func (cm *ConnMgr) BroadcastTeam(myPubKey string, payload []byte) error {
 		if err := json.Unmarshal(plain, &msg); err != nil {
 			return err
 		}
+		msg.TeamID = teamID
 		cm.bus.Publish(eventbus.TopicMsgReceived, msg)
 		return nil
 	}
@@ -430,12 +510,18 @@ func (cm *ConnMgr) BroadcastTeam(myPubKey string, payload []byte) error {
 			Payload:    payload,
 			Type:       0,
 			ReceiverId: "",
-			TeamId:     "",
+			TeamId:     teamID,
 		}
 
 		for _, peer := range peers {
+			if cm.isPeerOffline(peer.PubKeyBase64) {
+				continue
+			}
 			go func(p PeerInfo) {
 				if cm.SendViaIncoming(p.PubKeyBase64, envelope) {
+					return
+				}
+				if cm.SendViaChannel(p.PubKeyBase64, envelope) {
 					return
 				}
 				_, err := cm.GetOrDial(p.PubKeyBase64, p.IPAddress)
@@ -463,6 +549,8 @@ func (cm *ConnMgr) BroadcastChannel(myPubKey string, teamID string, channelID st
 		if err := json.Unmarshal(plain, &msg); err != nil {
 			return err
 		}
+		msg.TeamID = teamID
+		msg.ChannelID = channelID
 		cm.bus.Publish(eventbus.TopicMsgReceived, msg)
 		return nil
 	}
@@ -473,13 +561,19 @@ func (cm *ConnMgr) BroadcastChannel(myPubKey string, teamID string, channelID st
 			Payload:    payload,
 			Type:       0,
 			ReceiverId: "",
-			TeamId:     "",
+			TeamId:     teamID,
 			ChannelId:  channelID,
 		}
 
 		for _, peer := range peers {
+			if cm.isPeerOffline(peer.PubKeyBase64) {
+				continue
+			}
 			go func(p PeerInfo) {
 				if cm.SendViaIncoming(p.PubKeyBase64, envelope) {
+					return
+				}
+				if cm.SendViaChannel(p.PubKeyBase64, envelope) {
 					return
 				}
 				_, err := cm.GetOrDial(p.PubKeyBase64, p.IPAddress)
@@ -600,7 +694,13 @@ func (pc *PeerConn) startPersistentStream(cm *ConnMgr) error {
 				pc.heartbeatMu.Unlock()
 				if time.Since(lastAt) > 45*time.Second {
 					cm.logr.Warn("heartbeat", fmt.Sprintf("peer %s timed out (last seen %v ago)", truncateKey(pc.pubKey), time.Since(lastAt)))
-					cm.removePeer(pc.pubKey)
+					pubKey := pc.pubKey
+					cm.removePeer(pubKey)
+					time.AfterFunc(30*time.Second, func() {
+						if peer, ok := cm.discovery.GetPeerByPubKey(pubKey); ok && peer.IPAddress != "" {
+							cm.GetOrDial(pubKey, peer.IPAddress)
+						}
+					})
 					return
 				}
 				pc.heartbeatMu.Lock()
@@ -727,8 +827,55 @@ func (cm *ConnMgr) processReceivedEnvelope(envelope *chatpb.Envelope) {
 		return
 	}
 
-	// Type 8: Peer info exchange — update discovery with sender's reachable IPs
+
+	// Type 12: Conversation sync request → publish on EventBus for app layer
+	if envelope.Type == 12 {
+		var req struct {
+			ConvID   string `json:"conv_id"`
+			SinceHLC string `json:"since_hlc"`
+		}
+		if err := json.Unmarshal(envelope.Payload, &req); err != nil {
+			return
+		}
+		cm.bus.Publish(eventbus.TopicConvSyncRequest, eventbus.ConversationSyncPayload{
+			RequesterPubKey: envelope.SenderId,
+			ConversationID:  req.ConvID,
+			SinceHLC:        req.SinceHLC,
+		})
+		return
+	}
+
+	// Type 13: Conversation sync response → batch insert messages
+	if envelope.Type == 13 {
+		var resp struct {
+			ConvID   string          `json:"conv_id"`
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(envelope.Payload, &resp); err != nil {
+			return
+		}
+		cm.bus.Publish(eventbus.TopicConvSyncRequest, eventbus.ConversationSyncPayload{
+			RequesterPubKey: envelope.SenderId,
+			ConversationID:  resp.ConvID,
+			Messages:        []byte(resp.Messages),
+		})
+		return
+	}
+
+	// Type 8: Peer info exchange — update discovery with received peer list
 	if envelope.Type == 8 {
+		var peerList []PeerInfo
+		if err := json.Unmarshal(envelope.Payload, &peerList); err == nil && len(peerList) > 0 {
+			for _, p := range peerList {
+				if p.PubKeyBase64 != "" && p.PubKeyBase64 != cm.crypto.GetPublicKeyBase64() {
+					cm.UpsertPeer(p)
+				}
+			}
+			cm.RefreshSeen(envelope.SenderId)
+			return
+		}
+
+		// Backward compat: single peer format {pub_key, ips}
 		var info struct {
 			PubKey string   `json:"pub_key"`
 			IPs    []string `json:"ips"`
@@ -914,14 +1061,180 @@ func (cm *ConnMgr) processReceivedEnvelope(envelope *chatpb.Envelope) {
 		return
 	}
 
+	cm.logr.Trace("chat", fmt.Sprintf("processReceived: type=%d from=%s hlc=%s conv=%s", envelope.Type, truncateKey(envelope.SenderId), msg.HLC, msg.ConversationID))
+
 	msg.TeamID = envelope.TeamId
 	msg.ChannelID = envelope.ChannelId
+
+	// Flood dedup: if we've already processed this message (via direct + forwarded paths), skip.
+	if envelope.Type != 1 && cm.isHLCSeen(msg.HLC) {
+		return
+	}
+	if envelope.Type != 1 {
+		cm.markHLCSeen(msg.HLC)
+	}
 
 	if envelope.Type == 1 {
 		msg.ReceiverID = envelope.ReceiverId
 		cm.bus.Publish(eventbus.TopicPrivateMsgReceived, msg)
 	} else {
 		cm.bus.Publish(eventbus.TopicMsgReceived, msg)
+		cm.floodTeamMessage(envelope, msg.HLC)
 	}
 	cm.RefreshSeen(envelope.SenderId)
+}
+
+// isHLCSeen checks whether an HLC has been recently forwarded (flood dedup).
+func (cm *ConnMgr) isHLCSeen(hlc string) bool {
+	cm.recentHLCsMu.Lock()
+	defer cm.recentHLCsMu.Unlock()
+	_, ok := cm.recentHLCs[hlc]
+	return ok
+}
+
+// markHLCSeen records an HLC for flood dedup. Periodically cleans old entries.
+func (cm *ConnMgr) markHLCSeen(hlc string) {
+	cm.recentHLCsMu.Lock()
+	defer cm.recentHLCsMu.Unlock()
+
+	cm.recentHLCs[hlc] = time.Now()
+	if len(cm.recentHLCs) > 2000 {
+		cutoff := time.Now().Add(-5 * time.Minute)
+		for h, t := range cm.recentHLCs {
+			if t.Before(cutoff) {
+				delete(cm.recentHLCs, h)
+			}
+		}
+	}
+}
+
+// floodTeamMessage forwards a received team message to all other peers,
+// excluding the original sender. Uses HLC dedup to prevent loops.
+func (cm *ConnMgr) floodTeamMessage(envelope *chatpb.Envelope, hlc string) {
+	if cm.isHLCSeen(hlc) {
+		return
+	}
+	cm.markHLCSeen(hlc)
+	cm.logr.Trace("flood", fmt.Sprintf("floodTeamMessage: type=%d from=%s hlc=%s to %d peers", envelope.Type, truncateKey(envelope.SenderId), hlc, len(cm.peers)))
+
+	cm.mu.RLock()
+	peers := make([]*PeerConn, 0, len(cm.peers))
+	for _, pc := range cm.peers {
+		peers = append(peers, pc)
+	}
+	cm.mu.RUnlock()
+
+	if len(peers) <= 1 {
+		return
+	}
+
+	myPub := cm.crypto.GetPublicKeyBase64()
+	for _, pc := range peers {
+		if pc.pubKey == envelope.SenderId || pc.pubKey == myPub {
+			continue
+		}
+		if !cm.SendViaIncoming(pc.pubKey, envelope) && !cm.SendViaChannel(pc.pubKey, envelope) {
+			cm.logr.Debug("flood", fmt.Sprintf("failed to forward to %s", truncateKey(pc.pubKey)))
+		}
+	}
+}
+
+// SendConvSyncRequest sends a per-conversation sync request (Type 12) to a peer.
+func (cm *ConnMgr) SendConvSyncRequest(targetPubKey, convID, sinceHLC string) {
+	payload, _ := json.Marshal(map[string]string{"conv_id": convID, "since_hlc": sinceHLC})
+	envelope := &chatpb.Envelope{
+		Type:     12,
+		SenderId: cm.crypto.GetPublicKeyBase64(),
+		Payload:  payload,
+		TeamId:   cm.crypto.GetActiveTeam(),
+	}
+	cm.logr.Debug("sync", fmt.Sprintf("SyncRequest type=12 to %s conv=%s since=%s", truncateKey(targetPubKey), convID[:8], sinceHLC))
+	if !cm.SendViaIncoming(targetPubKey, envelope) && !cm.SendViaChannel(targetPubKey, envelope) {
+		peer, ok := cm.discovery.GetPeerByPubKey(targetPubKey)
+		if !ok {
+			cm.logr.Warn("sync", fmt.Sprintf("SyncRequest to %s failed: peer not in discovery", truncateKey(targetPubKey)))
+			return
+		}
+		cm.logr.Debug("sync", fmt.Sprintf("SyncRequest dialing %s for conv=%s", truncateKey(targetPubKey), convID[:8]))
+		if _, err := cm.GetOrDial(peer.PubKeyBase64, peer.IPAddress); err != nil {
+			cm.logr.Warn("sync", fmt.Sprintf("SyncRequest to %s failed: dial error %v", truncateKey(targetPubKey), err))
+			return
+		}
+		cm.SendViaChannel(targetPubKey, envelope)
+	}
+}
+
+// SendConvSyncResponse sends a per-conversation sync response (Type 13) with messages.
+func (cm *ConnMgr) SendConvSyncResponse(targetPubKey, convID string, messagesJSON []byte) {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"conv_id":  convID,
+		"messages": json.RawMessage(messagesJSON),
+	})
+	envelope := &chatpb.Envelope{
+		Type:     13,
+		SenderId: cm.crypto.GetPublicKeyBase64(),
+		Payload:  payload,
+		TeamId:   cm.crypto.GetActiveTeam(),
+	}
+	cm.logr.Debug("sync", fmt.Sprintf("SyncResponse type=13 to %s conv=%s (%d bytes)", truncateKey(targetPubKey), convID[:8], len(messagesJSON)))
+	if !cm.SendViaIncoming(targetPubKey, envelope) && !cm.SendViaChannel(targetPubKey, envelope) {
+		peer, ok := cm.discovery.GetPeerByPubKey(targetPubKey)
+		if !ok {
+			cm.logr.Warn("sync", fmt.Sprintf("SyncResponse to %s failed: peer not in discovery", truncateKey(targetPubKey)))
+			return
+		}
+		cm.logr.Debug("sync", fmt.Sprintf("SyncResponse dialing %s for conv=%s", truncateKey(targetPubKey), convID[:8]))
+		if _, err := cm.GetOrDial(peer.PubKeyBase64, peer.IPAddress); err != nil {
+			cm.logr.Warn("sync", fmt.Sprintf("SyncResponse to %s failed: dial error %v", truncateKey(targetPubKey), err))
+			return
+		}
+		cm.SendViaChannel(targetPubKey, envelope)
+	}
+}
+
+// BroadcastPeerInfo sends peer information to all connected peers.
+// When a new peer joins, this propagates their info and sends the full peer list back.
+func (cm *ConnMgr) BroadcastPeerInfo(newPeer PeerInfo) {
+	allPeers := cm.discovery.Snapshot()
+
+	myPub := cm.crypto.GetPublicKeyBase64()
+
+	// Notify the new peer about all existing peers (excluding newPeer itself)
+	if newPeer.PubKeyBase64 != "" && newPeer.PubKeyBase64 != myPub {
+		peerList := make([]PeerInfo, 0, len(allPeers))
+		for _, p := range allPeers {
+			if p.PubKeyBase64 != newPeer.PubKeyBase64 && p.PubKeyBase64 != myPub {
+				peerList = append(peerList, p)
+			}
+		}
+		if len(peerList) > 0 {
+			payload, _ := json.Marshal(peerList)
+			envelope := &chatpb.Envelope{
+				Type:     8,
+				SenderId: myPub,
+				Payload:  payload,
+				TeamId:   cm.crypto.GetActiveTeam(),
+			}
+			cm.SendViaIncoming(newPeer.PubKeyBase64, envelope)
+			cm.SendViaChannel(newPeer.PubKeyBase64, envelope)
+		}
+	}
+
+	// Notify all existing peers about the new peer
+	if newPeer.PubKeyBase64 != "" && newPeer.PubKeyBase64 != myPub {
+		payload, _ := json.Marshal([]PeerInfo{newPeer})
+		envelope := &chatpb.Envelope{
+			Type:     8,
+			SenderId: myPub,
+			Payload:  payload,
+			TeamId:   cm.crypto.GetActiveTeam(),
+		}
+		for _, p := range allPeers {
+			if p.PubKeyBase64 == newPeer.PubKeyBase64 || p.PubKeyBase64 == myPub {
+				continue
+			}
+			cm.SendViaIncoming(p.PubKeyBase64, envelope)
+			cm.SendViaChannel(p.PubKeyBase64, envelope)
+		}
+	}
 }

@@ -42,16 +42,6 @@ type Database interface {
 	DeleteSharedDirectory(ctx context.Context, path string) error
 	ListSharedDirectories(ctx context.Context) ([]*SharedDirectory, error)
 
-	// ---- 频道模块 ----
-	CreateChannel(ctx context.Context, ch *Channel) error
-	GetChannel(ctx context.Context, id string) (*Channel, error)
-	ListChannelsByTeam(ctx context.Context, teamID string) ([]*Channel, error)
-	DeleteChannel(ctx context.Context, id string) error
-	AddChannelMember(ctx context.Context, channelID, pubkey string) error
-	RemoveChannelMember(ctx context.Context, channelID, pubkey string) error
-	GetChannelMembers(ctx context.Context, channelID string) ([]*ChannelMember, error)
-	IsChannelMember(ctx context.Context, channelID, pubkey string) (bool, error)
-
 	// ---- 共享组模块 ----
 	CreateShareGroup(ctx context.Context, sg *ShareGroup) error
 	GetShareGroup(ctx context.Context, id string) (*ShareGroup, error)
@@ -60,10 +50,20 @@ type Database interface {
 	AddDirectoryToShareGroup(ctx context.Context, groupID, dirPath string) error
 	RemoveDirectoryFromShareGroup(ctx context.Context, groupID, dirPath string) error
 	ListShareGroupDirs(ctx context.Context, groupID string) ([]*ShareGroupDir, error)
+
+	// ---- 对话模块 ----
+	UpsertConversation(ctx context.Context, conv *Conversation) error
+	GetConversation(ctx context.Context, id string) (*Conversation, error)
+	ListConversations(ctx context.Context, teamID string) ([]*ConversationView, error)
+	GetConversationMessages(ctx context.Context, convID string, limit int, offset int) ([]*Message, error)
+	GetConversationMessagesSinceHLC(ctx context.Context, convID string, sinceHLC string, limit int) ([]*Message, error)
+	UpdateConversationLastHLC(ctx context.Context, convID string, hlc string) error
+	ListAllConversations(ctx context.Context) ([]*Conversation, error)
 }
 
 // DBTx 暴露了在事务中可用的操作
 type DBTx interface {
 	InsertMessageTx(ctx context.Context, msg *Message) error
 	UpsertFileLogTx(ctx context.Context, log *FileLog) error
+	UpsertConversationTx(ctx context.Context, conv *Conversation) error
 }

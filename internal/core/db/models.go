@@ -4,35 +4,20 @@ import "time"
 
 // Message 对应消息表（聊天记录）
 type Message struct {
-	ID         string    `json:"id"`          // 唯一消息ID (UUID)
-	HLC        string    `json:"hlc"`         // 混合逻辑时钟，格式如 "2026-04-13T15:58:00.000Z_001_NodeA" (可进行字典序绝对排序)
-	SenderID   string    `json:"sender_id"`   // 发送者公钥Hash
-	ReceiverID string    `json:"receiver_id"` // 接收者公钥Hash (若为空表示局域网群聊)
-	TeamID     string    `json:"team_id"`     // 团队ID (空字符串表示无团队上下文)
-	ChannelID  string    `json:"channel_id"`  // 频道ID (空字符串表示团队频道)
-	Content    []byte    `json:"content"`     // 加密后的载荷 (落盘加密)
-	Type       int       `json:"type"`        // 消息类型：0=纯文本, 1=系统通知, 2=文件元数据
-	CreatedAt  time.Time `json:"created_at"`  // 本地物理入库时间
+	ID             string    `json:"id"`
+	HLC            string    `json:"hlc"`
+	SenderID       string    `json:"sender_id"`
+	ReceiverID     string    `json:"receiver_id"`
+	TeamID         string    `json:"team_id"`
+	ChannelID      string    `json:"channel_id"`
+	ConversationID string    `json:"conversation_id"`
+	Content        []byte    `json:"content"`
+	Type           int       `json:"type"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // ReceiverIDGroupChat 是群聊消息的接收者标识（空字符串）
 const ReceiverIDGroupChat = ""
-
-// Channel 对应频道表
-type Channel struct {
-	ID        string    `json:"id"`
-	TeamID    string    `json:"team_id"`
-	Name      string    `json:"name"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// ChannelMember 对应频道成员表
-type ChannelMember struct {
-	ChannelID string    `json:"channel_id"`
-	Pubkey    string    `json:"pubkey"`
-	JoinedAt  time.Time `json:"joined_at"`
-}
 
 // FileLog 对应文件传输对账表（断点续传）
 type FileLog struct {
@@ -76,4 +61,25 @@ type ShareGroupDir struct {
 	GroupID string    `json:"group_id"`
 	DirPath string    `json:"dir_path"`
 	AddedAt time.Time `json:"added_at"`
+}
+
+// Conversation represents a chat conversation entity.
+// ID is deterministically derived (DeriveTeamConvID/DerivePrivateConvID) — same secret/pair → same ID across devices.
+type Conversation struct {
+	ID          string    `json:"id"`
+	TeamID      string    `json:"team_id"`
+	Type        string    `json:"type"` // "team" or "private"
+	DisplayName string    `json:"display_name"`
+	PeerPubkey  string    `json:"peer_pubkey"`
+	MyPubkey    string    `json:"my_pubkey"`
+	LastHLC     string    `json:"last_hlc"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ConversationView extends Conversation with the last message preview.
+type ConversationView struct {
+	Conversation
+	LastMessage string    `json:"last_message"`
+	LastMsgTime time.Time `json:"last_msg_time"`
 }

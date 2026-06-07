@@ -2,12 +2,14 @@ package crypto
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/curve25519"
 )
@@ -21,11 +23,13 @@ type IdentityFile struct {
 
 // paradeCrypto 实现了 Engine 接口
 type paradeCrypto struct {
-	masterKey  []byte            // 主密钥 (Argon2推导，用于解密本地数据库)
-	privKey    []byte            // 我的私钥 (Curve25519, 32字节)
-	pubKey     []byte            // 我的公钥 (Curve25519, 32字节)
-	teamKeys   map[string][]byte // 多队伍对称密钥环
-	activeTeam string            // 当前活跃的队伍 ID
+	masterKey     []byte            // 主密钥 (Argon2推导，用于解密本地数据库)
+	privKey       []byte            // 我的私钥 (Curve25519, 32字节)
+	pubKey        []byte            // 我的公钥 (Curve25519, 32字节)
+	personalUUID  string            // deterministic UUID derived from pubkey
+	teamKeys      map[string][]byte // 多队伍对称密钥环
+	activeTeam    string            // 当前活跃的队伍 ID
+	loadWarnings  []error           // non-fatal warnings from LoadIdentity
 }
 
 func NewEngine() Engine {
@@ -103,11 +107,15 @@ func (c *paradeCrypto) LoadIdentity(password, filepath string) error {
 	c.masterKey = masterKey
 	c.privKey = privKey
 	c.pubKey = idFile.PubKey
+	c.personalUUID = uuid.NewHash(sha256.New(), uuid.MustParse("6ba7b811-9dad-11d1-80b4-00c04fd430c8"), idFile.PubKey, 5).String()
 	if c.teamKeys == nil {
 		c.teamKeys = make(map[string][]byte)
 	}
 
-	c.loadTeamKeys()
+	// loadTeamKeys errors are non-fatal; collect as warnings
+	if err := c.loadTeamKeys(); err != nil {
+		c.loadWarnings = append(c.loadWarnings, err)
+	}
 
 	return nil
 }
@@ -117,4 +125,12 @@ func (c *paradeCrypto) GetPublicKeyBase64() string {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(c.pubKey)
+}
+
+func (c *paradeCrypto) IdentityLoadWarnings() []error {
+	return c.loadWarnings
+}
+
+func (c *paradeCrypto) GetPersonalUUID() string {
+	return c.personalUUID
 }

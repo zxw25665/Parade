@@ -139,6 +139,12 @@ func (e *Engine) Start(port int) error {
 	}()
 
 	e.started = true
+
+	// Load persisted peers from previous sessions
+	_ = e.connMgr.discovery.LoadPeers(PeersFile)
+	myPub := e.crypto.GetPublicKeyBase64()
+	e.connMgr.discovery.RemovePeer(myPub)
+
 	return nil
 }
 
@@ -154,6 +160,7 @@ func (e *Engine) Stop() error {
 	e.controlServer = nil
 	e.mu.Unlock()
 
+	e.connMgr.Stop()
 	e.connMgr.CloseAll()
 
 	if server != nil {
@@ -171,17 +178,45 @@ func (e *Engine) BroadcastTeam(payload []byte) error {
 	if !started {
 		return errors.New("network engine not started")
 	}
-	return e.connMgr.BroadcastTeam(e.crypto.GetPublicKeyBase64(), payload)
+	return e.connMgr.BroadcastTeam(e.crypto.GetPublicKeyBase64(), e.crypto.GetActiveTeam(), payload)
 }
 
-func (e *Engine) BroadcastChannel(channelID string, payload []byte) error {
+func (e *Engine) SendSyncRequest(targetPubKey, sinceHLC string) error {
+	return e.sendConvSync(targetPubKey, "", sinceHLC)
+}
+
+func (e *Engine) SendConvSyncRequest(targetPubKey, convID, sinceHLC string) error {
+	return e.sendConvSync(targetPubKey, convID, sinceHLC)
+}
+
+func (e *Engine) SendConvSyncResponse(targetPubKey, convID string, messagesJSON []byte) error {
 	e.mu.RLock()
 	started := e.started
 	e.mu.RUnlock()
 	if !started {
 		return errors.New("network engine not started")
 	}
-	return e.connMgr.BroadcastChannel(e.crypto.GetPublicKeyBase64(), e.crypto.GetActiveTeam(), channelID, payload)
+	e.connMgr.SendConvSyncResponse(targetPubKey, convID, messagesJSON)
+	return nil
+}
+
+func (e *Engine) sendConvSync(targetPubKey, convID, sinceHLC string) error {
+	e.mu.RLock()
+	started := e.started
+	e.mu.RUnlock()
+	if !started {
+		return errors.New("network engine not started")
+	}
+	e.connMgr.SendConvSyncRequest(targetPubKey, convID, sinceHLC)
+	return nil
+}
+
+func (e *Engine) PeersWithStatus() []PeerStatus {
+	return e.connMgr.discovery.ListWithStatus()
+}
+
+func (e *Engine) SavePeers() error {
+	return e.connMgr.discovery.SavePeers(PeersFile)
 }
 
 func (e *Engine) UnicastPrivate(targetPubKey string, payload []byte) error {

@@ -9,6 +9,11 @@ type Engine interface {
 	LoadIdentity(password, filepath string) error
 	// 获取当前成员的公钥 (Base64格式)，用于网络层广播自己的身份
 	GetPublicKeyBase64() string
+	// 返回从公钥确定性派生的个人 UUID（相同身份在不同设备上一致）
+	GetPersonalUUID() string
+	// 返回 LoadIdentity 期间收集的非致命警告（如队伍密钥文件损坏）
+	IdentityLoadWarnings() []error
+	SaveTeamKeys() error
 	// 设置队伍口令，内部转换为队伍对称密钥
 	SetTeamKey(teamPassword string)
 	// 返回队伍密钥的十六进制哈希，用于 mDNS TXT 同队过滤

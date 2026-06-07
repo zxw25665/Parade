@@ -93,7 +93,7 @@ func (c *paradeCrypto) SetTeamKeyForTeam(teamID, teamPassword string) {
 	if c.activeTeam == "" {
 		c.activeTeam = teamID
 	}
-	_ = c.saveTeamKeys()
+	_ = c.SaveTeamKeys()
 }
 
 func (c *paradeCrypto) RemoveTeamKey(teamID string) {
@@ -105,7 +105,7 @@ func (c *paradeCrypto) RemoveTeamKey(teamID string) {
 			break
 		}
 	}
-	_ = c.saveTeamKeys()
+	_ = c.SaveTeamKeys()
 }
 
 func (c *paradeCrypto) SetActiveTeam(teamID string) error {
@@ -113,6 +113,7 @@ func (c *paradeCrypto) SetActiveTeam(teamID string) error {
 		return fmt.Errorf("team key not found: %s", teamID)
 	}
 	c.activeTeam = teamID
+	_ = c.SaveTeamKeys()
 	return nil
 }
 
@@ -209,11 +210,17 @@ func (c *paradeCrypto) DecryptPrivate(ciphertext[]byte, remotePubKeyBase64 strin
 
 // ---- 队伍密钥持久化 ----
 
-func (c *paradeCrypto) saveTeamKeys() error {
+// teamKeysPersist is the serialized format for .parade_teams
+type teamKeysPersist struct {
+	Keys       map[string][]byte `json:"keys"`
+	ActiveTeam string            `json:"active_team"`
+}
+
+func (c *paradeCrypto) SaveTeamKeys() error {
 	if c.masterKey == nil {
 		return nil
 	}
-	data, err := json.Marshal(c.teamKeys)
+	data, err := json.Marshal(teamKeysPersist{Keys: c.teamKeys, ActiveTeam: c.activeTeam})
 	if err != nil {
 		return err
 	}
@@ -224,20 +231,28 @@ func (c *paradeCrypto) saveTeamKeys() error {
 	return os.WriteFile(TeamKeysFile, encrypted, 0600)
 }
 
-func (c *paradeCrypto) loadTeamKeys() {
+func (c *paradeCrypto) loadTeamKeys() error {
 	data, err := os.ReadFile(TeamKeysFile)
 	if err != nil {
-		return
+		// File not found is OK for new users
+		return nil
 	}
 	plain, err := aesGCMDecrypt(c.masterKey, data)
 	if err != nil {
-		return
+		return fmt.Errorf("team keys decryption failed: %w", err)
 	}
-	if err := json.Unmarshal(plain, &c.teamKeys); err != nil {
-		return
+	var persist teamKeysPersist
+	if err := json.Unmarshal(plain, &persist); err != nil {
+		return fmt.Errorf("team keys file corrupt: %w", err)
 	}
+	c.teamKeys = persist.Keys
 	if c.teamKeys == nil {
 		c.teamKeys = make(map[string][]byte)
+	}
+	if persist.ActiveTeam != "" {
+		if _, ok := c.teamKeys[persist.ActiveTeam]; ok {
+			c.activeTeam = persist.ActiveTeam
+		}
 	}
 	if c.activeTeam == "" && len(c.teamKeys) > 0 {
 		for id := range c.teamKeys {
@@ -245,4 +260,5 @@ func (c *paradeCrypto) loadTeamKeys() {
 			break
 		}
 	}
+	return nil
 }

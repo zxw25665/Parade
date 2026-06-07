@@ -1,35 +1,24 @@
 <template>
-    <div v-if="!store.loggedIn" class="error" style="margin-bottom:8px">{{ $t('team.mustLogin') }}</div>
-    <div v-else>
-      <div style="margin-bottom:12px">
-        <div class="row" style="margin-bottom:8px">
-          <input v-model="teamName" :placeholder="$t('team.teamNameOptional')" style="flex:1" />
-          <input v-model="teamSecret" type="password" :placeholder="$t('team.teamSecret')" style="flex:1" @keyup.enter="doJoin" />
-        </div>
-        <button @click="doJoin" :disabled="!teamSecret || loading" style="width:100%">{{ $t('team.joinCreate') }}</button>
+    <div class="team-panel-root">
+      <div class="row" style="margin-bottom:4px">
+        <input v-model="teamName" :placeholder="$t('team.teamNameOptional')" style="flex:1" />
+        <input v-model="teamSecret" type="password" :placeholder="$t('team.teamSecret')" style="flex:1" @keyup.enter="doJoin" />
+        <button class="btn-sm" @click="doJoin" :disabled="!teamSecret.trim() || loading">{{ $t('team.joinCreate') }}</button>
       </div>
 
-      <div v-if="store.teams.length > 0">
-        <div style="font-size:13px;color:#8a8aaf;margin-bottom:8px">{{ $t('team.myTeams') }}</div>
-        <div class="list">
-          <div v-for="team in store.teams" :key="team.id" class="list-item" style="justify-content:space-between">
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-weight:500">{{ team.name || $t('team.unnamedTeam') }}</span>
-              <span v-if="team.active" class="badge badge-green">{{ $t('team.active') }}</span>
-            </div>
-            <div style="display:flex;gap:6px">
-              <button v-if="!team.active" @click="doSwitch(team.id)" :disabled="loading" style="font-size:12px;padding:4px 10px">{{ $t('team.switch') }}</button>
-              <button @click="doLeave(team.id)" :disabled="loading" style="font-size:12px;padding:4px 10px;background:#e94560">{{ $t('team.leave') }}</button>
-            </div>
+      <div v-if="store.teams.length > 0" class="list" style="max-height:100px;overflow-y:auto">
+        <div v-for="team in store.teams" :key="team.id" class="list-item" style="justify-content:space-between;align-items:center;padding:4px 6px;">
+          <span style="font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">{{ team.name || $t('team.unnamedTeam') }}</span>
+          <span v-if="team.active" class="badge badge-green" style="font-size:10px;padding:1px 6px">{{ $t('team.active') }}</span>
+          <div style="display:flex;gap:3px;flex-shrink:0">
+            <button v-if="!team.active" class="btn-sm" style="font-size:10px;padding:2px 6px" @click="doSwitch(team.id)" :disabled="loading">{{ $t('team.switch') }}</button>
+            <button class="btn-sm" style="font-size:10px;padding:2px 6px;background:var(--color-danger)" @click="doLeave(team.id)" :disabled="loading">{{ $t('team.leave') }}</button>
           </div>
         </div>
       </div>
-      <div v-else style="font-size:13px;color:#8a8aaf">
-        {{ $t('team.noTeams') }}
-      </div>
+
+      <div v-if="errorMsg" class="error" style="font-size:11px">{{ errorMsg }}</div>
     </div>
-    <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
-    <div v-if="successMsg" class="success">{{ successMsg }}</div>
 </template>
 
 <script setup>
@@ -45,11 +34,9 @@ const teamName = ref('')
 const teamSecret = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
-const successMsg = ref('')
 
 onMounted(async () => {
-  if (!store.loggedIn) return
-  await refreshTeams()
+  if (store.loggedIn) await refreshTeams()
 })
 
 watch(() => store.loggedIn, (newVal) => {
@@ -63,21 +50,18 @@ async function refreshTeams() {
     store.teamJoined = store.teams.length > 0
     const activeId = await getActiveTeam()
     store.activeTeamId = activeId || ''
-    store.teams.forEach(t => {
-      t.active = t.id === store.activeTeamId
-    })
+    store.teams.forEach(t => { t.active = t.id === store.activeTeamId })
   } catch (e) {
-    errorMsg.value = t('team.loadTeamsFailed') + ': ' + e.toString()
+    errorMsg.value = e.toString()
   }
 }
 
 async function doJoin() {
-  loading.value = true
-  errorMsg.value = ''
-  successMsg.value = ''
+  const s = teamSecret.value.trim()
+  if (!s) return
+  loading.value = true; errorMsg.value = ''
   try {
-    await joinTeamWithName(teamName.value, teamSecret.value)
-    successMsg.value = t('team.joinSuccess')
+    await joinTeamWithName(teamName.value, s)
     teamName.value = ''
     teamSecret.value = ''
     await refreshTeams()
@@ -90,32 +74,14 @@ async function doJoin() {
 }
 
 async function doSwitch(teamId) {
-  loading.value = true
-  errorMsg.value = ''
-  successMsg.value = ''
-  try {
-    await switchTeam(teamId)
-    successMsg.value = t('team.switchSuccess')
-    await refreshTeams()
-  } catch (e) {
-    errorMsg.value = e.toString()
-  } finally {
-    loading.value = false
-  }
+  loading.value = true; errorMsg.value = ''
+  try { await switchTeam(teamId); await refreshTeams() } catch (e) { errorMsg.value = e.toString() }
+  finally { loading.value = false }
 }
 
 async function doLeave(teamId) {
-  loading.value = true
-  errorMsg.value = ''
-  successMsg.value = ''
-  try {
-    await leaveTeam(teamId)
-    successMsg.value = t('team.leaveSuccess')
-    await refreshTeams()
-  } catch (e) {
-    errorMsg.value = e.toString()
-  } finally {
-    loading.value = false
-  }
+  loading.value = true; errorMsg.value = ''
+  try { await leaveTeam(teamId); await refreshTeams(); if (store.teams.length === 0) store.teamJoined = false } catch (e) { errorMsg.value = e.toString() }
+  finally { loading.value = false }
 }
 </script>

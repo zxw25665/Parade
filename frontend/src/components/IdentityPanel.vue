@@ -31,8 +31,9 @@ import { useI18n } from 'vue-i18n'
 import { useBackend } from '../composables/useBackend.js'
 
 const { t } = useI18n()
-const { checkHasIdentity, register, login } = useBackend()
+const { checkHasIdentity, register, login, getRecentHistory } = useBackend()
 const store = inject('store')
+const state = inject('events')
 
 const password = ref('')
 const loading = ref(false)
@@ -67,9 +68,23 @@ async function doLogin() {
   try {
     await login(password.value)
     store.loggedIn = true
-    store.pubkey = 'connected'
+    const pk = await window['go']['app']['App']['GetPubKey']()
+    store.pubkey = pk || 'connected'
     successMsg.value = t('identity.loginSuccess')
     password.value = ''
+    try {
+      const history = await getRecentHistory(200, 0)
+      history.forEach(msg => {
+        if (!state.teamMessages.find(m => m.id === msg.id)) {
+          state.teamMessages.push({
+            id: msg.id, hlc: msg.hlc, sender: msg.sender,
+            content: msg.content, timestamp: msg.timestamp,
+            teamId: store.activeTeamId,
+            direction: msg.sender === pk ? 'send' : 'receive'
+          })
+        }
+      })
+    } catch (e) { /* history load is best-effort */ }
   } catch (e) {
     errorMsg.value = e.toString()
   } finally {

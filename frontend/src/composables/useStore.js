@@ -7,7 +7,12 @@ const store = reactive({
   teamJoined: false,
   teams: [],
   activeTeamId: '',
-  peerTests: {}
+  peerTests: {},
+
+  conversations: [],
+  activeConversationId: '',
+  peersWithStatus: [],
+  messagesByConv: {}
 })
 
 export function useStore() {

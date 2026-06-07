@@ -5,6 +5,7 @@
   },
   "panel": {
     "identity": "Identity",
+    "conversations": "Conversations",
     "team": "Team",
     "peers": "Peers",
     "files": "Files",
@@ -58,7 +59,15 @@
     "phaseMsgReceived": "Message received",
     "notTested": "Not yet tested",
     "invalidLogin": "Not logged in: no identity key loaded, please Login in Identity page first",
-    "engineNotStarted": "Network engine not started: please Join Team first"
+    "engineNotStarted": "Network engine not started: please Join Team first",
+    "clickToChat": "Click to start a private conversation"
+  },
+  "conv": {
+    "newPrivate": "New Private",
+    "selectPeer": "-- Select peer --",
+    "start": "Start",
+    "noConversations": "No conversations yet",
+    "noMessagesYet": "No messages yet"
   },
   "chat": {
     "teamChat": "Team Chat",
@@ -71,7 +80,11 @@
     "typePrivate": "Type a private message...",
     "send": "Send",
     "selectPeer": "-- Select peer --",
-    "me": "me"
+    "me": "me",
+    "selectConversation": "Select a conversation to start chatting",
+    "loadMore": "Load older messages",
+    "loading": "Loading…",
+    "startOfHistory": "— start of history —"
   },
   "file": {
     "local": "Local",
