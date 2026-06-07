@@ -121,11 +121,11 @@ var migrations = []Migration{
 			return err
 		},
 	},
-	{
-		Version: 6,
-		Name:    "add_share_groups_tables",
-		Up: func(tx *sql.Tx) error {
-			_, err := tx.Exec(`
+		{
+			Version: 6,
+			Name:    "add_share_groups_tables",
+			Up: func(tx *sql.Tx) error {
+				_, err := tx.Exec(`
 				CREATE TABLE IF NOT EXISTS share_groups (
 					id TEXT PRIMARY KEY,
 					team_id TEXT NOT NULL,
@@ -143,10 +143,41 @@ var migrations = []Migration{
 				);
 				CREATE INDEX IF NOT EXISTS idx_share_group_dirs_group ON share_group_dirs(group_id);
 			`)
-			return err
+				return err
+			},
 		},
-	},
-}
+		{
+			Version: 7,
+			Name:    "add_conversations_table",
+			Up: func(tx *sql.Tx) error {
+				_, err := tx.Exec(`
+				CREATE TABLE IF NOT EXISTS conversations (
+					id TEXT PRIMARY KEY,
+					team_id TEXT NOT NULL,
+					type TEXT NOT NULL,
+					display_name TEXT,
+					peer_pubkey TEXT,
+					my_pubkey TEXT,
+					last_hlc TEXT,
+					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				);
+				ALTER TABLE messages ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';
+				CREATE INDEX IF NOT EXISTS idx_messages_conv_hlc ON messages(conversation_id, hlc);
+				CREATE INDEX IF NOT EXISTS idx_conversations_team ON conversations(team_id);
+			`)
+				return err
+			},
+		},
+		{
+			Version: 8,
+			Name:    "drop_channels_tables",
+			Up: func(tx *sql.Tx) error {
+				_, err := tx.Exec(`DROP TABLE IF EXISTS channel_members; DROP TABLE IF EXISTS channels;`)
+				return err
+			},
+		},
+	}
 
 // NewSQLiteDB 初始化数据库，执行高并发核心优化并建表
 func NewSQLiteDB(dbPath string) (Database, error) {
@@ -269,16 +300,16 @@ type dbTxWrapper struct {
 // ---- 消息模块实现 ----
 
 func (db *sqliteDB) InsertMessage(ctx context.Context, msg *Message) error {
-	query := `INSERT OR IGNORE INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, content, type, created_at) 
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT OR IGNORE INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at) 
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := db.conn.ExecContext(ctx, query,
-		msg.ID, msg.HLC, msg.SenderID, msg.ReceiverID, msg.TeamID, msg.ChannelID, msg.Content, msg.Type, msg.CreatedAt,
+		msg.ID, msg.HLC, msg.SenderID, msg.ReceiverID, msg.TeamID, msg.ChannelID, msg.ConversationID, msg.Content, msg.Type, msg.CreatedAt,
 	)
 	return err
 }
 
 func (db *sqliteDB) GetMessagesSinceHLC(ctx context.Context, hlc string, limit int) ([]*Message, error) {
-	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, content, type, created_at 
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at 
 	          FROM messages WHERE hlc > ? ORDER BY hlc ASC LIMIT ?`
 	rows, err := db.conn.QueryContext(ctx, query, hlc, limit)
 	if err != nil {
@@ -301,7 +332,7 @@ func (db *sqliteDB) GetMessagesSinceHLC(ctx context.Context, hlc string, limit i
 }
 
 func (db *sqliteDB) GetRecentMessages(ctx context.Context, limit int, offset int) ([]*Message, error) {
-	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, content, type, created_at 
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at 
 	          FROM messages ORDER BY hlc DESC LIMIT ? OFFSET ?`
 	rows, err := db.conn.QueryContext(ctx, query, limit, offset)
 	if err != nil {
@@ -324,7 +355,7 @@ func (db *sqliteDB) GetRecentMessages(ctx context.Context, limit int, offset int
 }
 
 func (db *sqliteDB) GetRecentMessagesByTeam(ctx context.Context, teamID string, limit int, offset int) ([]*Message, error) {
-	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, content, type, created_at 
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at 
 	          FROM messages WHERE team_id = ? ORDER BY hlc DESC LIMIT ? OFFSET ?`
 	rows, err := db.conn.QueryContext(ctx, query, teamID, limit, offset)
 	if err != nil {
@@ -347,7 +378,7 @@ func (db *sqliteDB) GetRecentMessagesByTeam(ctx context.Context, teamID string, 
 }
 
 func (db *sqliteDB) GetRecentMessagesByChannel(ctx context.Context, channelID string, limit int, offset int) ([]*Message, error) {
-	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, content, type, created_at 
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at 
 	          FROM messages WHERE channel_id = ? ORDER BY hlc DESC LIMIT ? OFFSET ?`
 	rows, err := db.conn.QueryContext(ctx, query, channelID, limit, offset)
 	if err != nil {
@@ -370,7 +401,7 @@ func (db *sqliteDB) GetRecentMessagesByChannel(ctx context.Context, channelID st
 }
 
 func (db *sqliteDB) GetMessagesSinceHLCByTeam(ctx context.Context, teamID string, hlc string, limit int) ([]*Message, error) {
-	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, content, type, created_at 
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at 
 	          FROM messages WHERE team_id = ? AND hlc > ? ORDER BY hlc ASC LIMIT ?`
 	rows, err := db.conn.QueryContext(ctx, query, teamID, hlc, limit)
 	if err != nil {
@@ -605,114 +636,137 @@ func (db *sqliteDB) ListShareGroupDirs(ctx context.Context, groupID string) ([]*
 	return dirs, nil
 }
 
-// ---- 频道模块实现 ----
+// ---- 对话模块实现 ----
 
-func (db *sqliteDB) CreateChannel(ctx context.Context, ch *Channel) error {
-	query := `INSERT OR IGNORE INTO channels (id, team_id, name, created_by, created_at) VALUES (?, ?, ?, ?, ?)`
-	_, err := db.conn.ExecContext(ctx, query, ch.ID, ch.TeamID, ch.Name, ch.CreatedBy, ch.CreatedAt)
+func (db *sqliteDB) UpsertConversation(ctx context.Context, conv *Conversation) error {
+	query := `INSERT INTO conversations (id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	          ON CONFLICT(id) DO UPDATE SET
+	          last_hlc = COALESCE(NULLIF(excluded.last_hlc, ''), conversations.last_hlc),
+	          updated_at = excluded.updated_at,
+	          display_name = COALESCE(NULLIF(excluded.display_name, ''), conversations.display_name)`
+	_, err := db.conn.ExecContext(ctx, query,
+		conv.ID, conv.TeamID, conv.Type, conv.DisplayName, conv.PeerPubkey, conv.MyPubkey,
+		conv.LastHLC, conv.CreatedAt, conv.UpdatedAt,
+	)
 	return err
 }
 
-func (db *sqliteDB) GetChannel(ctx context.Context, id string) (*Channel, error) {
-	query := `SELECT id, team_id, name, created_by, created_at FROM channels WHERE id = ?`
+func (db *sqliteDB) GetConversation(ctx context.Context, id string) (*Conversation, error) {
+	query := `SELECT id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at
+	          FROM conversations WHERE id = ?`
 	row := db.conn.QueryRowContext(ctx, query, id)
-
-	c := &Channel{}
-	err := row.Scan(&c.ID, &c.TeamID, &c.Name, &c.CreatedBy, &c.CreatedAt)
+	c := &Conversation{}
+	err := row.Scan(&c.ID, &c.TeamID, &c.Type, &c.DisplayName, &c.PeerPubkey, &c.MyPubkey, &c.LastHLC, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	return c, err
 }
 
-func (db *sqliteDB) ListChannelsByTeam(ctx context.Context, teamID string) ([]*Channel, error) {
-	query := `SELECT id, team_id, name, created_by, created_at FROM channels WHERE team_id = ? ORDER BY created_at ASC`
+func (db *sqliteDB) ListConversations(ctx context.Context, teamID string) ([]*ConversationView, error) {
+	query := `SELECT c.id, c.team_id, c.type, c.display_name, c.peer_pubkey, c.my_pubkey, c.last_hlc, c.created_at, c.updated_at,
+	                 m.content, m.created_at
+	          FROM conversations c
+	          LEFT JOIN messages m ON m.conversation_id = c.id AND m.hlc = (
+	              SELECT MAX(hlc) FROM messages WHERE conversation_id = c.id
+	          )
+	          WHERE c.team_id = ?
+	          ORDER BY c.updated_at DESC`
 	rows, err := db.conn.QueryContext(ctx, query, teamID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var channels []*Channel
+	var convs []*ConversationView
 	for rows.Next() {
-		c, err := scanChannel(rows)
-		if err != nil {
+		cv := &ConversationView{}
+		var lastContent []byte
+		var lastTime sql.NullTime
+		if err := rows.Scan(&cv.ID, &cv.TeamID, &cv.Type, &cv.DisplayName, &cv.PeerPubkey, &cv.MyPubkey,
+			&cv.LastHLC, &cv.CreatedAt, &cv.UpdatedAt, &lastContent, &lastTime); err != nil {
 			return nil, err
 		}
-		channels = append(channels, c)
+		cv.LastMessage = string(lastContent)
+		if lastTime.Valid {
+			cv.LastMsgTime = lastTime.Time
+		}
+		convs = append(convs, cv)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return channels, nil
+	return convs, nil
 }
 
-func (db *sqliteDB) DeleteChannel(ctx context.Context, id string) error {
-	tx, err := db.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_members WHERE channel_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (db *sqliteDB) AddChannelMember(ctx context.Context, channelID, pubkey string) error {
-	query := `INSERT OR IGNORE INTO channel_members (channel_id, pubkey) VALUES (?, ?)`
-	_, err := db.conn.ExecContext(ctx, query, channelID, pubkey)
-	return err
-}
-
-func (db *sqliteDB) RemoveChannelMember(ctx context.Context, channelID, pubkey string) error {
-	query := `DELETE FROM channel_members WHERE channel_id = ? AND pubkey = ?`
-	_, err := db.conn.ExecContext(ctx, query, channelID, pubkey)
-	return err
-}
-
-func (db *sqliteDB) GetChannelMembers(ctx context.Context, channelID string) ([]*ChannelMember, error) {
-	query := `SELECT channel_id, pubkey, joined_at FROM channel_members WHERE channel_id = ? ORDER BY joined_at ASC`
-	rows, err := db.conn.QueryContext(ctx, query, channelID)
+func (db *sqliteDB) GetConversationMessages(ctx context.Context, convID string, limit int, offset int) ([]*Message, error) {
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at
+	          FROM messages WHERE conversation_id = ? ORDER BY hlc DESC LIMIT ? OFFSET ?`
+	rows, err := db.conn.QueryContext(ctx, query, convID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanMessages(rows)
+}
 
-	var members []*ChannelMember
+func (db *sqliteDB) GetConversationMessagesSinceHLC(ctx context.Context, convID string, sinceHLC string, limit int) ([]*Message, error) {
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at
+	          FROM messages WHERE conversation_id = ? AND hlc > ? ORDER BY hlc ASC LIMIT ?`
+	rows, err := db.conn.QueryContext(ctx, query, convID, sinceHLC, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMessages(rows)
+}
+
+func (db *sqliteDB) UpdateConversationLastHLC(ctx context.Context, convID string, hlc string) error {
+	_, err := db.conn.ExecContext(ctx, `UPDATE conversations SET last_hlc = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, hlc, convID)
+	return err
+}
+
+func (db *sqliteDB) ListAllConversations(ctx context.Context) ([]*Conversation, error) {
+	rows, err := db.conn.QueryContext(ctx,
+		`SELECT id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at
+		 FROM conversations ORDER BY type ASC, updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var convs []*Conversation
 	for rows.Next() {
-		m, err := scanChannelMember(rows)
-		if err != nil {
+		c := &Conversation{}
+		if err := rows.Scan(&c.ID, &c.TeamID, &c.Type, &c.DisplayName, &c.PeerPubkey, &c.MyPubkey, &c.LastHLC, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
-		members = append(members, m)
+		convs = append(convs, c)
+	}
+	return convs, rows.Err()
+}
+
+// scanMessages reads Message rows from a *sql.Rows.
+func scanMessages(rows *sql.Rows) ([]*Message, error) {
+	var msgs []*Message
+	for rows.Next() {
+		m := &Message{}
+		if err := rows.Scan(&m.ID, &m.HLC, &m.SenderID, &m.ReceiverID, &m.TeamID, &m.ChannelID, &m.ConversationID, &m.Content, &m.Type, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return members, nil
-}
-
-func (db *sqliteDB) IsChannelMember(ctx context.Context, channelID, pubkey string) (bool, error) {
-	query := `SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND pubkey = ?`
-	row := db.conn.QueryRowContext(ctx, query, channelID, pubkey)
-
-	var count int
-	if err := row.Scan(&count); err != nil {
-		return false, err
-	}
-	return count > 0, nil
+	return msgs, nil
 }
 
 // ---- 事务包装器方法实现 ----
 
 func (w *dbTxWrapper) InsertMessageTx(ctx context.Context, msg *Message) error {
-	query := `INSERT OR IGNORE INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, content, type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := w.tx.ExecContext(ctx, query, msg.ID, msg.HLC, msg.SenderID, msg.ReceiverID, msg.TeamID, msg.ChannelID, msg.Content, msg.Type, msg.CreatedAt)
+	query := `INSERT OR IGNORE INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := w.tx.ExecContext(ctx, query, msg.ID, msg.HLC, msg.SenderID, msg.ReceiverID, msg.TeamID, msg.ChannelID, msg.ConversationID, msg.Content, msg.Type, msg.CreatedAt)
 	return err
 }
 
@@ -724,23 +778,22 @@ func (w *dbTxWrapper) UpsertFileLogTx(ctx context.Context, log *FileLog) error {
 	return err
 }
 
+func (w *dbTxWrapper) UpsertConversationTx(ctx context.Context, conv *Conversation) error {
+	query := `INSERT INTO conversations (id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	          ON CONFLICT(id) DO UPDATE SET
+	          last_hlc = COALESCE(NULLIF(excluded.last_hlc, ''), conversations.last_hlc),
+	          updated_at = excluded.updated_at,
+	          display_name = COALESCE(NULLIF(excluded.display_name, ''), conversations.display_name)`
+	_, err := w.tx.ExecContext(ctx, query, conv.ID, conv.TeamID, conv.Type, conv.DisplayName, conv.PeerPubkey, conv.MyPubkey, conv.LastHLC, conv.CreatedAt, conv.UpdatedAt)
+	return err
+}
+
 // ---- 私有辅助函数 ----
 
 func scanMessage(rows *sql.Rows) (*Message, error) {
 	m := &Message{}
-	err := rows.Scan(&m.ID, &m.HLC, &m.SenderID, &m.ReceiverID, &m.TeamID, &m.ChannelID, &m.Content, &m.Type, &m.CreatedAt)
-	return m, err
-}
-
-func scanChannel(rows *sql.Rows) (*Channel, error) {
-	c := &Channel{}
-	err := rows.Scan(&c.ID, &c.TeamID, &c.Name, &c.CreatedBy, &c.CreatedAt)
-	return c, err
-}
-
-func scanChannelMember(rows *sql.Rows) (*ChannelMember, error) {
-	m := &ChannelMember{}
-	err := rows.Scan(&m.ChannelID, &m.Pubkey, &m.JoinedAt)
+	err := rows.Scan(&m.ID, &m.HLC, &m.SenderID, &m.ReceiverID, &m.TeamID, &m.ChannelID, &m.ConversationID, &m.Content, &m.Type, &m.CreatedAt)
 	return m, err
 }
 

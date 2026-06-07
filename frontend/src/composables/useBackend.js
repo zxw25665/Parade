@@ -16,14 +16,17 @@ import {
   GetDirectoryChildren,
   GetRemoteDirectoryChildren,
   StartDownload,
-  GetRecentHistory,
   CreateShareGroup,
   ListShareGroups,
   AddDirectoryToShareGroup,
   RemoveDirectoryFromShareGroup,
   DeleteShareGroup,
   GetShareGroupDirs,
-  GetDefaultDownloadDir
+  GetDefaultDownloadDir,
+  ListConversations,
+  GetConversationMessages,
+  StartPrivateConversation,
+  GetPeersWithStatus
 } from '../lib/wailsjs/go/app/App'
 import { addLogEntry } from './useLogStore.js'
 
@@ -92,7 +95,6 @@ export function useBackend() {
     getDirectoryChildren: wrapIPC('getDirectoryChildren', GetDirectoryChildren),
     getRemoteDirectoryChildren: wrapIPC('getRemoteDirectoryChildren', GetRemoteDirectoryChildren),
     startDownload: wrapIPC('startDownload', StartDownload),
-    getRecentHistory: wrapIPC('getRecentHistory', GetRecentHistory),
     connectToPeer: wrapIPC('connectToPeer', connectToPeer),
     createShareGroup: wrapIPC('createShareGroup', CreateShareGroup),
     listShareGroups: wrapIPC('listShareGroups', ListShareGroups),
@@ -100,6 +102,11 @@ export function useBackend() {
     removeDirectoryFromShareGroup: wrapIPC('removeDirectoryFromShareGroup', RemoveDirectoryFromShareGroup),
     deleteShareGroup: wrapIPC('deleteShareGroup', DeleteShareGroup),
     getShareGroupDirs: wrapIPC('getShareGroupDirs', GetShareGroupDirs),
-    getDefaultDownloadDir: wrapIPC('getDefaultDownloadDir', GetDefaultDownloadDir)
+    getDefaultDownloadDir: wrapIPC('getDefaultDownloadDir', GetDefaultDownloadDir),
+
+    listConversations: wrapIPC('listConversations', ListConversations),
+    getConversationMessages: wrapIPC('getConversationMessages', GetConversationMessages),
+    startPrivateConversation: wrapIPC('startPrivateConversation', StartPrivateConversation),
+    getPeersWithStatus: wrapIPC('getPeersWithStatus', GetPeersWithStatus)
   }
 }

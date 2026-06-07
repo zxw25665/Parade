@@ -5,6 +5,7 @@
   },
   "panel": {
     "identity": "身份",
+    "conversations": "会话",
     "team": "队伍",
     "peers": "节点",
     "files": "文件",
@@ -58,7 +59,15 @@
     "phaseMsgReceived": "收到消息",
     "notTested": "尚未测试",
     "invalidLogin": "未登录：没有加载身份密钥，请先在身份页面登录",
-    "engineNotStarted": "网络引擎未启动：请先加入队伍"
+    "engineNotStarted": "网络引擎未启动：请先加入队伍",
+    "clickToChat": "点击开始私聊"
+  },
+  "conv": {
+    "newPrivate": "新建私聊",
+    "selectPeer": "-- 选择节点 --",
+    "start": "开始",
+    "noConversations": "暂无会话",
+    "noMessagesYet": "暂无消息"
   },
   "chat": {
     "teamChat": "群聊",
@@ -71,7 +80,11 @@
     "typePrivate": "输入私聊消息...",
     "send": "发送",
     "selectPeer": "-- 选择节点 --",
-    "me": "我"
+    "me": "我",
+    "selectConversation": "选择一个会话开始聊天",
+    "loadMore": "加载更早的消息",
+    "loading": "加载中…",
+    "startOfHistory": "— 已到最早 —"
   },
   "file": {
     "local": "本地",

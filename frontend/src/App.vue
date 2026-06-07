@@ -1,6 +1,6 @@
 <template>
   <div class="app-layout">
-    <!-- ===== Left Panel: Identity, Team, Peers ===== -->
+    <!-- ===== Left Panel: Identity, Conversations, Peers ===== -->
     <aside class="side-panel left" :class="{ open: leftOpen, collapsed: !leftOpen }">
       <button class="panel-toggle" @click="leftOpen = !leftOpen" :title="leftOpen ? $t('panel.collapseLeft') : $t('panel.expandLeft')">
         {{ leftOpen ? '◀' : '▶' }}
@@ -19,18 +19,22 @@
           <TeamPanel />
         </CollapsibleSection>
 
+        <CollapsibleSection :title="$t('panel.conversations')" :default-open="true">
+          <ConversationList />
+        </CollapsibleSection>
+
         <CollapsibleSection :title="$t('panel.peers')" :default-open="true">
-          <PeerList />
+          <PeerStatus />
         </CollapsibleSection>
       </div>
     </aside>
 
-    <!-- ===== Center: Chat ===== -->
+    <!-- ===== Center: Chat (conversation-bound, no tabs) ===== -->
     <main class="center-panel">
       <ChatPanel />
     </main>
 
-    <!-- ===== Right Panel: Files, Downloads, History ===== -->
+    <!-- ===== Right Panel: Files, Downloads, Logs ===== -->
     <aside class="side-panel right" :class="{ open: rightOpen, collapsed: !rightOpen }">
       <button class="panel-toggle" @click="rightOpen = !rightOpen" :title="rightOpen ? $t('panel.collapseRight') : $t('panel.expandRight')">
         {{ rightOpen ? '▶' : '◀' }}
@@ -42,10 +46,6 @@
 
         <CollapsibleSection :title="$t('panel.downloads')" :default-open="true">
           <DownloadList />
-        </CollapsibleSection>
-
-        <CollapsibleSection :title="$t('panel.history')" :default-open="false">
-          <HistoryViewer />
         </CollapsibleSection>
 
         <CollapsibleSection :title="$t('panel.logs')" :default-open="false">
@@ -63,11 +63,11 @@ import { useStore } from './composables/useStore.js'
 import { OnForeground } from './lib/wailsjs/go/app/App.js'
 import IdentityPanel from './components/IdentityPanel.vue'
 import TeamPanel from './components/TeamPanel.vue'
-import PeerList from './components/PeerList.vue'
+import ConversationList from './components/ConversationList.vue'
+import PeerStatus from './components/PeerStatus.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import FileBrowser from './components/FileBrowser.vue'
 import DownloadList from './components/DownloadList.vue'
-import HistoryViewer from './components/HistoryViewer.vue'
 import LogPanel from './components/LogPanel.vue'
 import CollapsibleSection from './components/CollapsibleSection.vue'
 import LanguageToggle from './components/LanguageToggle.vue'
@@ -96,9 +96,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* All layout styles are in index.html global CSS */
-/* Scoped blocks only for App-specific overrides if needed */
-
 .logo-header {
   display: flex;
   align-items: center;

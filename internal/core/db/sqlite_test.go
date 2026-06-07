@@ -224,3 +224,153 @@ func BenchmarkBatchInsert(b *testing.B) {
 		})
 	}
 }
+
+func TestConversation_UpsertCreate(t *testing.T) {
+	db, cleanup := setupTest(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	conv := &Conversation{
+		ID:          "conv-1",
+		TeamID:      "team-1",
+		Type:        "private",
+		DisplayName: "alice_bob",
+		PeerPubkey:  "pubkey-bob",
+		MyPubkey:    "pubkey-alice",
+		LastHLC:     "",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if err := db.UpsertConversation(ctx, conv); err != nil {
+		t.Fatalf("UpsertConversation failed: %v", err)
+	}
+
+	got, err := db.GetConversation(ctx, "conv-1")
+	if err != nil {
+		t.Fatalf("GetConversation failed: %v", err)
+	}
+	if got.ID != "conv-1" || got.Type != "private" {
+		t.Errorf("unexpected conversation: %+v", got)
+	}
+}
+
+func TestConversation_UpsertUpdate(t *testing.T) {
+	db, cleanup := setupTest(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	now := time.Now()
+	conv := &Conversation{ID: "conv-2", TeamID: "t1", Type: "team", DisplayName: "old", LastHLC: "", CreatedAt: now, UpdatedAt: now}
+	db.UpsertConversation(ctx, conv)
+
+	updated := &Conversation{ID: "conv-2", TeamID: "t1", Type: "team", DisplayName: "new", LastHLC: "hlc-123", UpdatedAt: time.Now()}
+	db.UpsertConversation(ctx, updated)
+
+	got, _ := db.GetConversation(ctx, "conv-2")
+	if got.DisplayName != "new" {
+		t.Errorf("display_name not updated: %s", got.DisplayName)
+	}
+	if got.LastHLC != "hlc-123" {
+		t.Errorf("last_hlc not updated: %s", got.LastHLC)
+	}
+}
+
+func TestConversation_ListByTeam(t *testing.T) {
+	db, cleanup := setupTest(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	db.UpsertConversation(ctx, &Conversation{ID: "c1", TeamID: "team-a", Type: "team", CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	db.UpsertConversation(ctx, &Conversation{ID: "c2", TeamID: "team-a", Type: "private", CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	db.UpsertConversation(ctx, &Conversation{ID: "c3", TeamID: "team-b", Type: "team", CreatedAt: time.Now(), UpdatedAt: time.Now()})
+
+	convs, err := db.ListConversations(ctx, "team-a")
+	if err != nil {
+		t.Fatalf("ListConversations failed: %v", err)
+	}
+	if len(convs) != 2 {
+		t.Errorf("expected 2 convs for team-a, got %d", len(convs))
+	}
+}
+
+func TestConversation_GetMessages(t *testing.T) {
+	db, cleanup := setupTest(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		db.InsertMessage(ctx, &Message{
+			ID:             fmt.Sprintf("m%d", i),
+			HLC:            fmt.Sprintf("hlc-%d", i),
+			ConversationID: "conv-x",
+			Content:        []byte("hello"),
+		})
+	}
+
+	msgs, err := db.GetConversationMessages(ctx, "conv-x", 10, 0)
+	if err != nil {
+		t.Fatalf("GetConversationMessages failed: %v", err)
+	}
+	if len(msgs) != 5 {
+		t.Errorf("expected 5 messages, got %d", len(msgs))
+	}
+}
+
+func TestConversation_GetMessagesSinceHLC(t *testing.T) {
+	db, cleanup := setupTest(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		db.InsertMessage(ctx, &Message{
+			ID:             fmt.Sprintf("m%d", i),
+			HLC:            fmt.Sprintf("hlc-%d", i),
+			ConversationID: "conv-y",
+			Content:        []byte("hello"),
+		})
+	}
+
+	msgs, err := db.GetConversationMessagesSinceHLC(ctx, "conv-y", "hlc-2", 10)
+	if err != nil {
+		t.Fatalf("GetConversationMessagesSinceHLC failed: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("expected 2 messages after hlc-2, got %d", len(msgs))
+	}
+}
+
+func TestConversation_UpdateLastHLC(t *testing.T) {
+	db, cleanup := setupTest(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	db.UpsertConversation(ctx, &Conversation{ID: "conv-z", TeamID: "t1", Type: "team", CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	db.UpdateConversationLastHLC(ctx, "conv-z", "hlc-latest")
+
+	got, _ := db.GetConversation(ctx, "conv-z")
+	if got.LastHLC != "hlc-latest" {
+		t.Errorf("last_hlc not updated: %s", got.LastHLC)
+	}
+}
+
+func TestConversation_InsertMessageWithConvID(t *testing.T) {
+	db, cleanup := setupTest(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	db.UpsertConversation(ctx, &Conversation{ID: "cv-msg", TeamID: "t1", Type: "team", CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	db.InsertMessage(ctx, &Message{
+		ID:             "msg-with-conv",
+		HLC:            "hlc-msg",
+		ConversationID: "cv-msg",
+		Content:        []byte("with conv"),
+	})
+
+	msgs, err := db.GetConversationMessages(ctx, "cv-msg", 10, 0)
+	if err != nil {
+		t.Fatalf("GetConversationMessages failed: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ConversationID != "cv-msg" {
+		t.Errorf("conversation_id not stored correctly")
+	}
+}

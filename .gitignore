@@ -75,6 +75,7 @@ test_*.db
 test_*-wal
 test_*-shm
 .parade.log
+logsfordebug/
 
 # CLAUDE.md is AI assistant context, not project documentation
 CLAUDE.md

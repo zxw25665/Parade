@@ -1,21 +1,50 @@
 import { reactive, onMounted, onUnmounted } from 'vue'
 import { EventsOn, EventsOff } from '../lib/wailsjs/runtime/runtime'
 import { addLogEntry } from './useLogStore.js'
+import { useStore } from './useStore.js'
 
 const state = reactive({
   peers: [],
-  teamMessages: [],
-  privateMessages: [],
   downloads: {},
   completedDownloads: []
 })
 
+function upsertPeerWithStatus(list, payload) {
+  const pubkey = payload.PubKeyBase64 || payload.pubkey
+  if (!pubkey) return
+  const idx = list.findIndex(p => p.pubkey === pubkey)
+  const status = payload.status || (payload.Status)
+  const next = {
+    pubkey,
+    ip: payload.IPAddress || payload.ip || (idx >= 0 ? list[idx].ip : ''),
+    status: status || (idx >= 0 ? list[idx].status : 'offline'),
+    last_heartbeat: payload.last_heartbeat || payload.LastHeartbeat || '',
+    last_online: payload.last_online || payload.LastOnlineAt || ''
+  }
+  if (idx >= 0) list.splice(idx, 1, next)
+  else list.push(next)
+}
+
 export function useEvents() {
+  const store = useStore()
+
   onMounted(() => {
     EventsOn('ui_peer_joined', (data) => {
       const p = { pubkey: data.PubKeyBase64 || data.pubkey, ip: data.IPAddress || data.ip }
       if (!state.peers.find(x => x.pubkey === p.pubkey)) {
         state.peers.push(p)
+      }
+      const alreadyOnline = store.peersWithStatus.find(x => x.pubkey === p.pubkey)
+      if (!alreadyOnline) {
+        store.peersWithStatus.push({
+          pubkey: p.pubkey,
+          ip: p.ip,
+          status: 'online',
+          last_heartbeat: '',
+          last_online: ''
+        })
+      } else {
+        upsertPeerWithStatus(store.peersWithStatus, { pubkey: p.pubkey, ip: p.ip, status: 'online' })
       }
     })
 
@@ -23,32 +52,37 @@ export function useEvents() {
       const pubkey = data.PubKeyBase64 || data.pubkey
       const idx = state.peers.findIndex(x => x.pubkey === pubkey)
       if (idx >= 0) state.peers.splice(idx, 1)
+      upsertPeerWithStatus(store.peersWithStatus, { pubkey, status: 'offline' })
+    })
+
+    EventsOn('ui_peer_status', (data) => {
+      upsertPeerWithStatus(store.peersWithStatus, data)
+    })
+
+    EventsOn('ui_conversation_updated', () => {
+      // Backend signals that conversations changed. Components watching
+      // store.conversations should re-fetch via listConversations() — we
+      // intentionally do not mutate here so the data source stays canonical.
     })
 
     EventsOn('ui_new_message', (data) => {
-      state.teamMessages.unshift({
+      const convId = data.conversation_id || data.ConversationID || data.conversationId || ''
+      if (!convId) return
+      if (!store.messagesByConv[convId]) {
+        store.messagesByConv[convId] = []
+      }
+      const arr = store.messagesByConv[convId]
+      if (arr.find(m => m.id === data.id)) return
+      arr.push({
         id: data.id,
         hlc: data.hlc,
         sender: data.sender,
         content: data.content,
         timestamp: data.timestamp,
-        teamId: data.team_id || '',
-        channelId: data.channel_id || '',
-        direction: 'receive'
+        conversationId: convId,
+        direction: data.sender === store.pubkey ? 'send' : 'receive'
       })
-    })
-
-    EventsOn('ui_private_message', (data) => {
-      state.privateMessages.unshift({
-        id: data.id,
-        hlc: data.hlc,
-        senderId: data.senderId,
-        receiverId: data.receiverId,
-        content: data.content,
-        timestamp: data.timestamp,
-        teamId: data.team_id || '',
-        direction: data.senderId ? 'receive' : 'send'
-      })
+      arr.sort((a, b) => (a.hlc || '').localeCompare(b.hlc || ''))
     })
 
     EventsOn('ui_file_progress', (data) => {
@@ -75,7 +109,8 @@ export function useEvents() {
   })
 
   onUnmounted(() => {
-    EventsOff('ui_peer_joined', 'ui_peer_left', 'ui_new_message', 'ui_private_message', 'ui_file_progress', 'ui_file_completed', 'ui_log')
+    EventsOff('ui_peer_joined', 'ui_peer_left', 'ui_peer_status', 'ui_conversation_updated',
+              'ui_new_message', 'ui_file_progress', 'ui_file_completed', 'ui_log')
   })
 
   return state

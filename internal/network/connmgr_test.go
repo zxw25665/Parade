@@ -29,6 +29,9 @@ func (f fullTestCrypto) DecryptLocal(ciphertext []byte) ([]byte, error)   { retu
 func (f fullTestCrypto) EncryptPrivate(plaintext []byte, remotePubKeyBase64 string) ([]byte, error) {
 	return plaintext, nil
 }
+func (f fullTestCrypto) IdentityLoadWarnings() []error { return nil }
+func (f fullTestCrypto) GetPersonalUUID() string               { return "test-personal-uuid" }
+func (f fullTestCrypto) SaveTeamKeys() error                    { return nil }
 
 var _ crypto.Engine = fullTestCrypto{}
 

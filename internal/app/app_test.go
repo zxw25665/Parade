@@ -41,6 +41,11 @@ func (m *MockNetwork) ConnectToPeer(ip string) (*network.PeerConnectResult, erro
 	}, nil
 }
 func (m *MockNetwork) OnForeground() {}
+func (m *MockNetwork) SendSyncRequest(targetPubKey, sinceHLC string) error { return nil }
+func (m *MockNetwork) SendConvSyncRequest(targetPubKey, convID, sinceHLC string) error { return nil }
+func (m *MockNetwork) SendConvSyncResponse(targetPubKey, convID string, messagesJSON []byte) error { return nil }
+func (m *MockNetwork) SavePeers() error { return nil }
+func (m *MockNetwork) PeersWithStatus() []network.PeerStatus { return nil }
 func (m *MockNetwork) BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error) {
 	return nil, nil
 }
@@ -96,7 +101,7 @@ func TestApp_FullFlow(t *testing.T) {
 	txt := "Hello World"
 	_ = a.SendTeamChat(txt)
 
-	hist, _ := a.GetRecentHistory(1, 0)
+	hist, _ := a.GetConversationMessages(DeriveTeamConvID(a.crypto.GetActiveTeam()), 1, 0)
 	if hist[0]["content"] != txt {
 		t.Errorf("DB content mismatch")
 	}
@@ -136,17 +141,18 @@ func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 	_ = a.JoinTeam("team")
 
 	_ = a.database.InsertMessage(context.Background(), &db.Message{
-		ID:        uuid.New().String(),
-		HLC:       "2026-04-25T00:00:00.000Z_0001_TEST",
-		SenderID:  "test_node",
-		Content:   []byte("this is not valid encrypted data"),
-		TeamID:    a.crypto.GetActiveTeam(),
-		CreatedAt: time.Now(),
+		ID:             uuid.New().String(),
+		HLC:            "2026-04-25T00:00:00.000Z_0001_TEST",
+		SenderID:       "test_node",
+		Content:        []byte("this is not valid encrypted data"),
+		TeamID:         a.crypto.GetActiveTeam(),
+		ConversationID: DeriveTeamConvID(a.crypto.GetActiveTeam()),
+		CreatedAt:      time.Now(),
 	})
 
-	hist, err := a.GetRecentHistory(10, 0)
+	hist, err := a.GetConversationMessages(DeriveTeamConvID(a.crypto.GetActiveTeam()), 10, 0)
 	if err != nil {
-		t.Fatalf("GetRecentHistory failed: %v", err)
+		t.Fatalf("GetConversationMessages failed: %v", err)
 	}
 	if len(hist) == 0 {
 		t.Fatal("expected at least 1 message")
