@@ -41,14 +41,14 @@ func (m *MockNetwork) ConnectToPeer(ip string) (*network.PeerConnectResult, erro
 	}, nil
 }
 func (m *MockNetwork) OnForeground() {}
-func (m *MockNetwork) SendSyncRequest(targetPubKey, sinceHLC string) error { return nil }
-func (m *MockNetwork) SendConvSyncRequest(targetPubKey, convID, sinceHLC string) error { return nil }
-func (m *MockNetwork) SendConvSyncResponse(targetPubKey, convID string, messagesJSON []byte) error { return nil }
+func (m *MockNetwork) SendConvSyncRequest(targetUUID, convID, sinceHLC string) error { return nil }
+func (m *MockNetwork) SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error { return nil }
 func (m *MockNetwork) SavePeers() error { return nil }
 func (m *MockNetwork) PeersWithStatus() []network.PeerStatus { return nil }
-func (m *MockNetwork) BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error) {
+func (m *MockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error) {
 	return nil, nil
 }
+func (m *MockNetwork) ResolveUUID(uuid string) (string, error) { return "mock_resolved_pubkey", nil }
 
 type MockFile struct{}
 

@@ -19,8 +19,8 @@ const (
 
 // PeerEventPayload 对应节点加入/离开事件
 type PeerEventPayload struct {
-	PubKeyBase64 string
-	IPAddress    string
+	PeerUUID  string
+	IPAddress string
 }
 
 // MsgReceivedPayload 对应收到消息事件
@@ -33,6 +33,8 @@ type MsgReceivedPayload struct {
 	TeamID         string
 	ChannelID      string
 	ConversationID string
+	SenderIP       string `json:",omitempty"`
+	SenderPubKey   string `json:",omitempty"`
 }
 
 // FileProgressPayload 对应文件进度事件
@@ -46,8 +48,8 @@ type FileProgressPayload struct {
 
 // ConversationSyncPayload carries a per-conversation sync request/response.
 type ConversationSyncPayload struct {
-	RequesterPubKey string
-	ConversationID  string
-	SinceHLC        string
-	Messages        []byte // JSON-serialized []*db.Message for sync response
+	RequesterUUID  string
+	ConversationID string
+	SinceHLC       string
+	Messages       []byte // JSON-serialized []*db.Message for sync response
 }

@@ -10,7 +10,7 @@ const state = reactive({
 })
 
 function upsertPeerWithStatus(list, payload) {
-  const pubkey = payload.PubKeyBase64 || payload.pubkey
+  const pubkey = payload.PeerUUID || payload.uuid || payload.PubKeyBase64 || payload.pubkey
   if (!pubkey) return
   const idx = list.findIndex(p => p.pubkey === pubkey)
   const status = payload.status || (payload.Status)
@@ -30,7 +30,7 @@ export function useEvents() {
 
   onMounted(() => {
     EventsOn('ui_peer_joined', (data) => {
-      const p = { pubkey: data.PubKeyBase64 || data.pubkey, ip: data.IPAddress || data.ip }
+      const p = { pubkey: data.PeerUUID || data.uuid || data.PubKeyBase64 || data.pubkey, ip: data.IPAddress || data.ip }
       if (!state.peers.find(x => x.pubkey === p.pubkey)) {
         state.peers.push(p)
       }
@@ -49,7 +49,7 @@ export function useEvents() {
     })
 
     EventsOn('ui_peer_left', (data) => {
-      const pubkey = data.PubKeyBase64 || data.pubkey
+      const pubkey = data.PeerUUID || data.uuid || data.PubKeyBase64 || data.pubkey
       const idx = state.peers.findIndex(x => x.pubkey === pubkey)
       if (idx >= 0) state.peers.splice(idx, 1)
       upsertPeerWithStatus(store.peersWithStatus, { pubkey, status: 'offline' })
@@ -96,8 +96,9 @@ export function useEvents() {
     })
 
     EventsOn('ui_file_completed', (data) => {
-      const taskId = typeof data === 'string' ? data : (data.TaskID || data.taskId || data.task_id)
-      if (state.downloads[taskId]) {
+      const taskId = typeof data === 'string' ? data
+        : (data.TaskID || data.taskId || data.task_id || data.data || '')
+      if (taskId && state.downloads[taskId]) {
         state.completedDownloads.push({ ...state.downloads[taskId], completedAt: Date.now() })
         delete state.downloads[taskId]
       }

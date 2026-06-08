@@ -127,6 +127,15 @@ func (c *paradeCrypto) GetPublicKeyBase64() string {
 	return base64.StdEncoding.EncodeToString(c.pubKey)
 }
 
+func (c *paradeCrypto) GetPrivateKey() []byte {
+	if c.privKey == nil {
+		return nil
+	}
+	clone := make([]byte, len(c.privKey))
+	copy(clone, c.privKey)
+	return clone
+}
+
 func (c *paradeCrypto) IdentityLoadWarnings() []error {
 	return c.loadWarnings
 }

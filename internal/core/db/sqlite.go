@@ -177,6 +177,27 @@ var migrations = []Migration{
 				return err
 			},
 		},
+		{
+			Version: 9,
+			Name:    "unique_hlc",
+			Up: func(tx *sql.Tx) error {
+				_, err := tx.Exec(`
+					DELETE FROM messages WHERE rowid NOT IN (
+						SELECT MIN(rowid) FROM messages GROUP BY hlc
+					);
+					CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hlc_unique ON messages(hlc);
+				`)
+				return err
+			},
+		},
+		{
+			Version: 10,
+			Name:    "add_peer_crypto_key",
+			Up: func(tx *sql.Tx) error {
+				_, err := tx.Exec(`ALTER TABLE conversations ADD COLUMN peer_crypto_key TEXT NOT NULL DEFAULT '';`)
+				return err
+			},
+		},
 	}
 
 // NewSQLiteDB 初始化数据库，执行高并发核心优化并建表
@@ -300,8 +321,9 @@ type dbTxWrapper struct {
 // ---- 消息模块实现 ----
 
 func (db *sqliteDB) InsertMessage(ctx context.Context, msg *Message) error {
-	query := `INSERT OR IGNORE INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at) 
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at) 
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	          ON CONFLICT(hlc) DO NOTHING`
 	_, err := db.conn.ExecContext(ctx, query,
 		msg.ID, msg.HLC, msg.SenderID, msg.ReceiverID, msg.TeamID, msg.ChannelID, msg.ConversationID, msg.Content, msg.Type, msg.CreatedAt,
 	)
@@ -639,25 +661,26 @@ func (db *sqliteDB) ListShareGroupDirs(ctx context.Context, groupID string) ([]*
 // ---- 对话模块实现 ----
 
 func (db *sqliteDB) UpsertConversation(ctx context.Context, conv *Conversation) error {
-	query := `INSERT INTO conversations (id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	query := `INSERT INTO conversations (id, team_id, type, display_name, peer_pubkey, my_pubkey, peer_crypto_key, last_hlc, created_at, updated_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	          ON CONFLICT(id) DO UPDATE SET
 	          last_hlc = COALESCE(NULLIF(excluded.last_hlc, ''), conversations.last_hlc),
 	          updated_at = excluded.updated_at,
-	          display_name = COALESCE(NULLIF(excluded.display_name, ''), conversations.display_name)`
+	          display_name = COALESCE(NULLIF(excluded.display_name, ''), conversations.display_name),
+	          peer_crypto_key = COALESCE(NULLIF(excluded.peer_crypto_key, ''), conversations.peer_crypto_key)`
 	_, err := db.conn.ExecContext(ctx, query,
-		conv.ID, conv.TeamID, conv.Type, conv.DisplayName, conv.PeerPubkey, conv.MyPubkey,
+		conv.ID, conv.TeamID, conv.Type, conv.DisplayName, conv.PeerPubkey, conv.MyPubkey, conv.PeerCryptoKey,
 		conv.LastHLC, conv.CreatedAt, conv.UpdatedAt,
 	)
 	return err
 }
 
 func (db *sqliteDB) GetConversation(ctx context.Context, id string) (*Conversation, error) {
-	query := `SELECT id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at
+	query := `SELECT id, team_id, type, display_name, peer_pubkey, my_pubkey, peer_crypto_key, last_hlc, created_at, updated_at
 	          FROM conversations WHERE id = ?`
 	row := db.conn.QueryRowContext(ctx, query, id)
 	c := &Conversation{}
-	err := row.Scan(&c.ID, &c.TeamID, &c.Type, &c.DisplayName, &c.PeerPubkey, &c.MyPubkey, &c.LastHLC, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.TeamID, &c.Type, &c.DisplayName, &c.PeerPubkey, &c.MyPubkey, &c.PeerCryptoKey, &c.LastHLC, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -665,7 +688,7 @@ func (db *sqliteDB) GetConversation(ctx context.Context, id string) (*Conversati
 }
 
 func (db *sqliteDB) ListConversations(ctx context.Context, teamID string) ([]*ConversationView, error) {
-	query := `SELECT c.id, c.team_id, c.type, c.display_name, c.peer_pubkey, c.my_pubkey, c.last_hlc, c.created_at, c.updated_at,
+	query := `SELECT c.id, c.team_id, c.type, c.display_name, c.peer_pubkey, c.my_pubkey, c.peer_crypto_key, c.last_hlc, c.created_at, c.updated_at,
 	                 m.content, m.created_at
 	          FROM conversations c
 	          LEFT JOIN messages m ON m.conversation_id = c.id AND m.hlc = (
@@ -684,7 +707,7 @@ func (db *sqliteDB) ListConversations(ctx context.Context, teamID string) ([]*Co
 		cv := &ConversationView{}
 		var lastContent []byte
 		var lastTime sql.NullTime
-		if err := rows.Scan(&cv.ID, &cv.TeamID, &cv.Type, &cv.DisplayName, &cv.PeerPubkey, &cv.MyPubkey,
+		if err := rows.Scan(&cv.ID, &cv.TeamID, &cv.Type, &cv.DisplayName, &cv.PeerPubkey, &cv.MyPubkey, &cv.PeerCryptoKey,
 			&cv.LastHLC, &cv.CreatedAt, &cv.UpdatedAt, &lastContent, &lastTime); err != nil {
 			return nil, err
 		}
@@ -729,7 +752,7 @@ func (db *sqliteDB) UpdateConversationLastHLC(ctx context.Context, convID string
 
 func (db *sqliteDB) ListAllConversations(ctx context.Context) ([]*Conversation, error) {
 	rows, err := db.conn.QueryContext(ctx,
-		`SELECT id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at
+		`SELECT id, team_id, type, display_name, peer_pubkey, my_pubkey, peer_crypto_key, last_hlc, created_at, updated_at
 		 FROM conversations ORDER BY type ASC, updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -738,7 +761,7 @@ func (db *sqliteDB) ListAllConversations(ctx context.Context) ([]*Conversation, 
 	var convs []*Conversation
 	for rows.Next() {
 		c := &Conversation{}
-		if err := rows.Scan(&c.ID, &c.TeamID, &c.Type, &c.DisplayName, &c.PeerPubkey, &c.MyPubkey, &c.LastHLC, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.TeamID, &c.Type, &c.DisplayName, &c.PeerPubkey, &c.MyPubkey, &c.PeerCryptoKey, &c.LastHLC, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		convs = append(convs, c)
@@ -765,7 +788,7 @@ func scanMessages(rows *sql.Rows) ([]*Message, error) {
 // ---- 事务包装器方法实现 ----
 
 func (w *dbTxWrapper) InsertMessageTx(ctx context.Context, msg *Message) error {
-	query := `INSERT OR IGNORE INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO messages (id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(hlc) DO NOTHING`
 	_, err := w.tx.ExecContext(ctx, query, msg.ID, msg.HLC, msg.SenderID, msg.ReceiverID, msg.TeamID, msg.ChannelID, msg.ConversationID, msg.Content, msg.Type, msg.CreatedAt)
 	return err
 }
@@ -779,13 +802,14 @@ func (w *dbTxWrapper) UpsertFileLogTx(ctx context.Context, log *FileLog) error {
 }
 
 func (w *dbTxWrapper) UpsertConversationTx(ctx context.Context, conv *Conversation) error {
-	query := `INSERT INTO conversations (id, team_id, type, display_name, peer_pubkey, my_pubkey, last_hlc, created_at, updated_at)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	query := `INSERT INTO conversations (id, team_id, type, display_name, peer_pubkey, my_pubkey, peer_crypto_key, last_hlc, created_at, updated_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	          ON CONFLICT(id) DO UPDATE SET
 	          last_hlc = COALESCE(NULLIF(excluded.last_hlc, ''), conversations.last_hlc),
 	          updated_at = excluded.updated_at,
-	          display_name = COALESCE(NULLIF(excluded.display_name, ''), conversations.display_name)`
-	_, err := w.tx.ExecContext(ctx, query, conv.ID, conv.TeamID, conv.Type, conv.DisplayName, conv.PeerPubkey, conv.MyPubkey, conv.LastHLC, conv.CreatedAt, conv.UpdatedAt)
+	          display_name = COALESCE(NULLIF(excluded.display_name, ''), conversations.display_name),
+	          peer_crypto_key = COALESCE(NULLIF(excluded.peer_crypto_key, ''), conversations.peer_crypto_key)`
+	_, err := w.tx.ExecContext(ctx, query, conv.ID, conv.TeamID, conv.Type, conv.DisplayName, conv.PeerPubkey, conv.MyPubkey, conv.PeerCryptoKey, conv.LastHLC, conv.CreatedAt, conv.UpdatedAt)
 	return err
 }
 
