@@ -41,13 +41,14 @@ func (n *IntegrationMockNetwork) ConnectToPeer(ip string) (*network.PeerConnectR
 	}, nil
 }
 func (n *IntegrationMockNetwork) OnForeground() {}
-func (n *IntegrationMockNetwork) SendConvSyncRequest(targetPubKey, convID, sinceHLC string) error { return nil }
-func (n *IntegrationMockNetwork) SendConvSyncResponse(targetPubKey, convID string, messagesJSON []byte) error { return nil }
+func (n *IntegrationMockNetwork) SendConvSyncRequest(targetUUID, convID, sinceHLC string) error { return nil }
+func (n *IntegrationMockNetwork) SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error { return nil }
 func (n *IntegrationMockNetwork) SavePeers() error { return nil }
 func (n *IntegrationMockNetwork) PeersWithStatus() []network.PeerStatus { return nil }
-func (n *IntegrationMockNetwork) BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error) {
+func (n *IntegrationMockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error) {
 	return nil, nil
 }
+func (n *IntegrationMockNetwork) ResolveUUID(uuid string) (string, error) { return "mock_resolved_pubkey", nil }
 
 type IntegrationMockFile struct{}
 

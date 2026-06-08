@@ -3,14 +3,14 @@
     <!-- Mode toggle -->
     <div class="row" style="margin-bottom:16px">
       <button
-        @click="mode = 'local'"
+        @click="switchMode('local')"
         :class="mode === 'local' ? 'badge badge-green' : 'badge'"
         style="margin-right:8px;cursor:pointer"
       >
         {{ $t('file.local') }}
       </button>
       <button
-        @click="mode = 'remote'"
+        @click="switchMode('remote')"
         :class="mode === 'remote' ? 'badge badge-green' : 'badge'"
         style="cursor:pointer"
       >
@@ -141,6 +141,12 @@ const mode = ref('local')
 const browsePeer = ref('')
 const browsePath = ref('')
 const dirEntries = ref([])
+
+function switchMode(m) {
+  mode.value = m
+  browsePath.value = ''
+  dirEntries.value = []
+}
 const sharedDirs = ref([])
 const sharePath = ref('')
 const downloadTarget = ref(null)

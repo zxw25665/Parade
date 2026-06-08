@@ -28,9 +28,9 @@ func DeriveTeamConvID(teamID string) string {
 }
 
 // DerivePrivateConvID returns a deterministic conversation ID for a private chat.
-// Input order is commutative: same pair of pubkeys always produces the same ID.
-func DerivePrivateConvID(myPubKey, peerPubKey string) string {
-	a, b := myPubKey, peerPubKey
+// Input order is commutative: same pair of UUIDs always produces the same ID.
+func DerivePrivateConvID(myUUID, peerUUID string) string {
+	a, b := myUUID, peerUUID
 	if a > b {
 		a, b = b, a
 	}

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +22,19 @@ import (
 )
 
 const IdentityFile = "./.parade_identity"
+
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+			return ipnet.IP.String()
+		}
+	}
+	return ""
+}
 
 type subscription struct {
 	topic string
@@ -36,19 +51,24 @@ type App struct {
 	ui       Frontend
 	logr     logger.Logger
 
-	isLoggedIn bool
-	subs       []subscription
+	isLoggedIn    bool
+	subs          []subscription
+	peerJoinedAt  map[string]time.Time
+	convUpdatedAt map[string]time.Time
+	peerJoinedMu  sync.Mutex
 }
 
 func NewApp(bus eventbus.EventBus, cry crypto.Engine, d db.Database, net NetworkEngine, file FileEngine, ui Frontend, logr logger.Logger) *App {
 	return &App{
-		evBus:    bus,
-		crypto:   cry,
-		database: d,
-		netEng:   net,
-		fileEng:  file,
-		ui:       ui,
-		logr:     logr,
+		evBus:         bus,
+		crypto:        cry,
+		database:      d,
+		netEng:        net,
+		fileEng:       file,
+		ui:            ui,
+		logr:          logr,
+		peerJoinedAt:  make(map[string]time.Time),
+		convUpdatedAt: make(map[string]time.Time),
 	}
 }
 
@@ -124,10 +144,18 @@ func (a *App) requireFileEngine() error {
 func (a *App) registerEventSubscribers() {
 	a.subscribe(eventbus.TopicPeerJoined, func(c context.Context, ev eventbus.Event) {
 		if payload, ok := ev.Payload.(eventbus.PeerEventPayload); ok {
-			a.log(logger.Info, "eventbus", fmt.Sprintf("peer joined: %s", payload.PubKeyBase64))
+			a.peerJoinedMu.Lock()
+			if last, ok := a.peerJoinedAt[payload.PeerUUID]; ok && time.Since(last) < 5*time.Second {
+				a.peerJoinedMu.Unlock()
+				return
+			}
+			a.peerJoinedAt[payload.PeerUUID] = time.Now()
+			a.peerJoinedMu.Unlock()
+
+			a.log(logger.Info, "eventbus", fmt.Sprintf("peer joined: %s", payload.PeerUUID))
 			go func() {
-				a.StartPrivateConversation(payload.PubKeyBase64)
-				a.syncAllConversationsWithPeer(payload.PubKeyBase64)
+				a.StartPrivateConversation(payload.PeerUUID)
+				a.syncAllConversationsWithPeer(payload.PeerUUID)
 			}()
 		}
 		a.ui.Notify("ui_peer_joined", ev.Payload)
@@ -135,7 +163,7 @@ func (a *App) registerEventSubscribers() {
 
 	a.subscribe(eventbus.TopicPeerLeft, func(c context.Context, ev eventbus.Event) {
 		if payload, ok := ev.Payload.(eventbus.PeerEventPayload); ok {
-			a.log(logger.Info, "eventbus", fmt.Sprintf("peer left: %s", payload.PubKeyBase64))
+			a.log(logger.Info, "eventbus", fmt.Sprintf("peer left: %s", payload.PeerUUID))
 		}
 		a.ui.Notify("ui_peer_left", ev.Payload)
 	})
@@ -146,7 +174,7 @@ func (a *App) registerEventSubscribers() {
 			return
 		}
 
-		if payload.SenderID == a.crypto.GetPublicKeyBase64() {
+		if payload.SenderID == a.crypto.GetPersonalUUID() {
 			return
 		}
 
@@ -207,18 +235,23 @@ func (a *App) registerEventSubscribers() {
 			return
 		}
 
-		if payload.SenderID == a.crypto.GetPublicKeyBase64() {
+		if payload.SenderID == a.crypto.GetPersonalUUID() {
 			return
 		}
 
 		a.log(logger.Debug, "eventbus", fmt.Sprintf("private msg received from %s type=%d len=%d", payload.SenderID, payload.Type, len(payload.Content)))
 
-		encrypted, err := a.crypto.EncryptPrivate(payload.Content, payload.SenderID)
+		senderPubkey, err := a.netEng.ResolveUUID(payload.SenderID)
+		if err != nil {
+			a.log(logger.Warning, "app", fmt.Sprintf("resolve UUID failed: %v", err))
+			return
+		}
+		encrypted, err := a.crypto.EncryptPrivate(payload.Content, senderPubkey)
 		if err != nil {
 			a.log(logger.Warning, "app", fmt.Sprintf("encrypt private failed: %v", err))
 			return
 		}
-		convID := DerivePrivateConvID(a.crypto.GetPublicKeyBase64(), payload.SenderID)
+		convID := DerivePrivateConvID(a.crypto.GetPersonalUUID(), payload.SenderID)
 		msg := &db.Message{
 			ID:             uuid.New().String(),
 			HLC:            payload.HLC,
@@ -233,7 +266,7 @@ func (a *App) registerEventSubscribers() {
 		if err := a.database.InsertMessage(a.ctx, msg); err != nil {
 			a.log(logger.Error, "app", fmt.Sprintf("insert private message failed: %v", err))
 		}
-		a.ensureConversation(convID, "private", payload.SenderID)
+		a.ensureConversation(convID, "private", payload.SenderID, senderPubkey)
 		_ = a.database.UpdateConversationLastHLC(a.ctx, convID, payload.HLC)
 
 		a.ui.Notify("ui_new_message", map[string]interface{}{
@@ -267,11 +300,11 @@ func (a *App) registerEventSubscribers() {
 			return
 		}
 		a.ui.Notify("ui_peer_status", map[string]interface{}{
-			"pubkey": payload.PubKeyBase64,
+			"uuid":   payload.PeerUUID,
 			"status": "online",
 		})
 		go func() {
-			a.syncAllConversationsWithPeer(payload.PubKeyBase64)
+			a.syncAllConversationsWithPeer(payload.PeerUUID)
 		}()
 	})
 
@@ -281,7 +314,7 @@ func (a *App) registerEventSubscribers() {
 			return
 		}
 		a.ui.Notify("ui_peer_status", map[string]interface{}{
-			"pubkey": payload.PubKeyBase64,
+			"uuid":   payload.PeerUUID,
 			"status": "offline",
 		})
 	})
@@ -297,24 +330,34 @@ func (a *App) registerEventSubscribers() {
 				a.log(logger.Warning, "eventbus", fmt.Sprintf("conv sync response unmarshal failed: %v", err))
 				return
 			}
-			for _, m := range incoming {
-				_ = a.database.InsertMessage(a.ctx, m)
-			}
 			if len(incoming) > 0 {
+				_ = a.database.RunInTx(a.ctx, func(tx db.DBTx) error {
+					for _, m := range incoming {
+						_ = tx.InsertMessageTx(a.ctx, m)
+					}
+					return nil
+				})
 				_ = a.database.UpdateConversationLastHLC(a.ctx, payload.ConversationID, incoming[len(incoming)-1].HLC)
+				a.peerJoinedMu.Lock()
+				if last, ok := a.convUpdatedAt[payload.ConversationID]; !ok || time.Since(last) > 3*time.Second {
+					a.convUpdatedAt[payload.ConversationID] = time.Now()
+					a.peerJoinedMu.Unlock()
+					a.ui.Notify("ui_conversation_updated", nil)
+				} else {
+					a.peerJoinedMu.Unlock()
+				}
 			}
-			a.ui.Notify("ui_conversation_updated", nil)
 			return
 		}
 		msgs, err := a.database.GetConversationMessagesSinceHLC(a.ctx, payload.ConversationID, payload.SinceHLC, 500)
 		if err != nil || len(msgs) == 0 {
-			a.log(logger.Debug, "sync", fmt.Sprintf("sync request from %s conv=%s: no messages since %s", truncate(payload.RequesterPubKey, 16), payload.ConversationID[:8], payload.SinceHLC))
+			a.log(logger.Debug, "sync", fmt.Sprintf("sync request from %s conv=%s: no messages since %s", truncate(payload.RequesterUUID, 16), payload.ConversationID[:8], payload.SinceHLC))
 			return
 		}
-		a.log(logger.Debug, "sync", fmt.Sprintf("sync request from %s conv=%s: sending %d messages", truncate(payload.RequesterPubKey, 16), payload.ConversationID[:8], len(msgs)))
+		a.log(logger.Debug, "sync", fmt.Sprintf("sync request from %s conv=%s: sending %d messages", truncate(payload.RequesterUUID, 16), payload.ConversationID[:8], len(msgs)))
 		msgData, _ := json.Marshal(msgs)
 		if a.netEng != nil {
-			_ = a.netEng.SendConvSyncResponse(payload.RequesterPubKey, payload.ConversationID, msgData)
+			_ = a.netEng.SendConvSyncResponse(payload.RequesterUUID, payload.ConversationID, msgData)
 		}
 	})
 }
@@ -406,7 +449,7 @@ func (a *App) JoinTeamWithName(name, secret string) (string, error) {
 		}
 	}
 	convID := DeriveTeamConvID(teamID)
-	a.ensureConversation(convID, "team", "")
+	a.ensureConversation(convID, "team", "", "")
 	return teamID, nil
 }
 
@@ -501,15 +544,21 @@ func (a *App) GetConversationMessages(convID string, limit int, offset int) ([]m
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		content := "[message corrupted]"
-		if conv != nil && conv.Type == "private" && conv.PeerPubkey != "" {
-			var decErr error
-			var dec []byte
-			dec, decErr = a.crypto.DecryptPrivate(m.Content, conv.PeerPubkey)
-			if decErr != nil {
-				dec, decErr = a.crypto.DecryptPrivate(m.Content, a.crypto.GetPublicKeyBase64())
-			}
-			if decErr == nil {
-				content = string(dec)
+		if conv != nil && conv.Type == "private" {
+			if conv.PeerCryptoKey != "" {
+				dec, decErr := a.crypto.DecryptPrivate(m.Content, conv.PeerCryptoKey)
+				if decErr == nil {
+					content = string(dec)
+				}
+			} else if conv.PeerPubkey != "" {
+				// Fallback: resolve from peerMap (for conversations created before migration)
+				peerPubkey, resolveErr := a.netEng.ResolveUUID(conv.PeerPubkey)
+				if resolveErr == nil {
+					dec, decErr := a.crypto.DecryptPrivate(m.Content, peerPubkey)
+					if decErr == nil {
+						content = string(dec)
+					}
+				}
 			}
 		} else {
 			dec, decErr := a.crypto.DecryptTeam(m.Content)
@@ -525,21 +574,26 @@ func (a *App) GetConversationMessages(convID string, limit int, offset int) ([]m
 	return res, nil
 }
 
-func (a *App) StartPrivateConversation(peerPubkey string) (string, error) {
+func (a *App) StartPrivateConversation(peerUUID string) (string, error) {
 	if err := a.checkLoggedIn(); err != nil { return "", err }
-	a.log(logger.Debug, "ipc", fmt.Sprintf("StartPrivateConversation called (peer=%s)", truncate(peerPubkey, 16)))
-	myPub := a.crypto.GetPublicKeyBase64()
-	convID := DerivePrivateConvID(myPub, peerPubkey)
+	a.log(logger.Debug, "ipc", fmt.Sprintf("StartPrivateConversation called (peer=%s)", truncate(peerUUID, 16)))
+	myUUID := a.crypto.GetPersonalUUID()
+	convID := DerivePrivateConvID(myUUID, peerUUID)
 	existing, _ := a.database.GetConversation(a.ctx, convID)
+	pubkey, resolveErr := a.netEng.ResolveUUID(peerUUID)
+	if resolveErr != nil {
+		a.log(logger.Warning, "app", fmt.Sprintf("StartPrivateConversation: resolve UUID failed: %v", resolveErr))
+	}
 	conv := &db.Conversation{
-		ID:          convID,
-		TeamID:      a.crypto.GetActiveTeam(),
-		Type:        "private",
-		DisplayName: truncate(peerPubkey, 16),
-		PeerPubkey:  peerPubkey,
-		MyPubkey:    myPub,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:            convID,
+		TeamID:        a.crypto.GetActiveTeam(),
+		Type:          "private",
+		DisplayName:   truncate(peerUUID, 16),
+		PeerPubkey:    peerUUID,
+		MyPubkey:      myUUID,
+		PeerCryptoKey: pubkey,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 	if err := a.database.UpsertConversation(a.ctx, conv); err != nil {
 		return "", err
@@ -557,7 +611,7 @@ func (a *App) GetPeersWithStatus() ([]map[string]interface{}, error) {
 	res := make([]map[string]interface{}, 0, len(statuses))
 	for _, s := range statuses {
 		res = append(res, map[string]interface{}{
-			"pubkey":         s.PubKeyBase64,
+			"pubkey":         s.PeerUUID,
 			"ip":             s.IPAddress,
 			"status":         s.Status,
 			"last_heartbeat": s.LastHeartbeat,
@@ -581,39 +635,40 @@ func (a *App) checkLoggedIn() error {
 	return nil
 }
 
-func (a *App) ensureConversation(convID, convType, peerPubkey string) {
+func (a *App) ensureConversation(convID, convType, peerUUID, peerCryptoKey string) {
 	conv := &db.Conversation{
-		ID:          convID,
-		TeamID:      a.crypto.GetActiveTeam(),
-		Type:        convType,
-		DisplayName: truncate(peerPubkey, 16),
-		PeerPubkey:  peerPubkey,
-		MyPubkey:    a.crypto.GetPublicKeyBase64(),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:            convID,
+		TeamID:        a.crypto.GetActiveTeam(),
+		Type:          convType,
+		DisplayName:   truncate(peerUUID, 16),
+		PeerPubkey:    peerUUID,
+		MyPubkey:      a.crypto.GetPersonalUUID(),
+		PeerCryptoKey: peerCryptoKey,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 	_ = a.database.UpsertConversation(a.ctx, conv)
 }
 
-func (a *App) syncAllConversationsWithPeer(pubKeyBase64 string) {
+func (a *App) syncAllConversationsWithPeer(peerUUID string) {
 	if a.netEng == nil || a.database == nil {
 		return
 	}
-	a.log(logger.Debug, "sync", fmt.Sprintf("syncAllConversationsWithPeer: start for %s", truncate(pubKeyBase64, 16)))
+	a.log(logger.Debug, "sync", fmt.Sprintf("syncAllConversationsWithPeer: start for %s", truncate(peerUUID, 16)))
 	convs, err := a.database.ListAllConversations(a.ctx)
 	if err != nil {
 		a.log(logger.Warning, "eventbus", fmt.Sprintf("list all conversations failed: %v", err))
 		return
 	}
-	a.log(logger.Debug, "sync", fmt.Sprintf("syncAllConversationsWithPeer: %d conversations to sync to %s", len(convs), truncate(pubKeyBase64, 16)))
+	a.log(logger.Debug, "sync", fmt.Sprintf("syncAllConversationsWithPeer: %d conversations to sync to %s", len(convs), truncate(peerUUID, 16)))
 	for _, cv := range convs {
-		_ = a.netEng.SendConvSyncRequest(pubKeyBase64, cv.ID, "")
+		_ = a.netEng.SendConvSyncRequest(peerUUID, cv.ID, "")
 	}
 }
 
 func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte) ([]byte, error), sendFn func([]byte) error) {
-	myPub := a.crypto.GetPublicKeyBase64()
-	hlc := GenerateHLC(myPub)
+	myUUID := a.crypto.GetPersonalUUID()
+	hlc := GenerateHLC(myUUID)
 	raw := []byte(text)
 	teamID := a.crypto.GetActiveTeam()
 
@@ -628,7 +683,7 @@ func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte
 	msg := &db.Message{
 		ID:             msgID,
 		HLC:            hlc,
-		SenderID:       myPub,
+		SenderID:       myUUID,
 		Content:        enc,
 		TeamID:         teamID,
 		ConversationID: convID,
@@ -642,7 +697,7 @@ func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte
 	a.ui.Notify("ui_new_message", map[string]interface{}{
 		"id":              msgID,
 		"hlc":             hlc,
-		"sender":          myPub,
+		"sender":          myUUID,
 		"team_id":         teamID,
 		"conversation_id": convID,
 		"content":         text,
@@ -651,40 +706,48 @@ func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte
 
 	netPayload, _ := json.Marshal(eventbus.MsgReceivedPayload{
 		HLC:            hlc,
-		SenderID:       myPub,
+		SenderID:       myUUID,
 		Content:        raw,
 		Type:           0,
 		TeamID:         teamID,
 		ConversationID: convID,
+		SenderIP:       getLocalIP(),
+		SenderPubKey:   a.crypto.GetPublicKeyBase64(),
 	})
 	encrypted, err := encryptFn(netPayload)
 	if err != nil {
 		a.log(logger.Warning, "app", "encrypt for send failed: "+err.Error())
 		return
 	}
-	_ = sendFn(encrypted)
+	if err := sendFn(encrypted); err != nil {
+		a.log(logger.Warning, "app", "send failed: "+err.Error())
+	}
 }
 
 func (a *App) SendTeamChat(text string) error {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("SendTeamChat called (%d chars)", len(text)))
 	if err := a.checkLoggedIn(); err != nil { return err }
 	convID := DeriveTeamConvID(a.crypto.GetActiveTeam())
-	a.ensureConversation(convID, "team", "")
+	a.ensureConversation(convID, "team", "", "")
 	a.sendConversationMessage(convID, text, a.crypto.EncryptTeam, a.netEng.BroadcastTeam)
 	return nil
 }
 
-func (a *App) SendPrivateChat(targetPubKey, text string) error {
+func (a *App) SendPrivateChat(targetUUID, text string) error {
 	if err := a.checkLoggedIn(); err != nil { return err }
-	a.log(logger.Debug, "ipc", fmt.Sprintf("SendPrivateChat called (to=%s, %d chars)", truncate(targetPubKey, 16), len(text)))
-	if targetPubKey == "" {
-		return errors.New("target public key is required")
+	a.log(logger.Debug, "ipc", fmt.Sprintf("SendPrivateChat called (to=%s, %d chars)", truncate(targetUUID, 16), len(text)))
+	if targetUUID == "" {
+		return errors.New("target UUID is required")
 	}
-	convID := DerivePrivateConvID(a.crypto.GetPublicKeyBase64(), targetPubKey)
-	a.ensureConversation(convID, "private", targetPubKey)
+	pubkey, err := a.netEng.ResolveUUID(targetUUID)
+	if err != nil {
+		return fmt.Errorf("resolve target UUID: %w", err)
+	}
+	convID := DerivePrivateConvID(a.crypto.GetPersonalUUID(), targetUUID)
+	a.ensureConversation(convID, "private", targetUUID, pubkey)
 	a.sendConversationMessage(convID, text,
-		func(payload []byte) ([]byte, error) { return a.crypto.EncryptPrivate(payload, targetPubKey) },
-		func(payload []byte) error { return a.netEng.UnicastPrivate(targetPubKey, payload) },
+		func(payload []byte) ([]byte, error) { return a.crypto.EncryptPrivate(payload, pubkey) },
+		func(payload []byte) error { return a.netEng.UnicastPrivate(targetUUID, payload) },
 	)
 	return nil
 }
@@ -754,13 +817,13 @@ func (a *App) GetDirectoryChildren(path string) (interface{}, error) {
 }
 
 // GetRemoteDirectoryChildren 浏览远程对等节点的共享目录
-func (a *App) GetRemoteDirectoryChildren(targetPubKey, path string) ([]map[string]interface{}, error) {
-	a.log(logger.Debug, "ipc", fmt.Sprintf("GetRemoteDirectoryChildren called (to=%s, path=%s)", targetPubKey, path))
+func (a *App) GetRemoteDirectoryChildren(targetUUID, path string) ([]map[string]interface{}, error) {
+	a.log(logger.Debug, "ipc", fmt.Sprintf("GetRemoteDirectoryChildren called (to=%s, path=%s)", targetUUID, path))
 	if a.netEng == nil {
 		return nil, errors.New("network engine not available")
 	}
-	if targetPubKey == "" {
-		return nil, errors.New("target public key is required")
+	if targetUUID == "" {
+		return nil, errors.New("target UUID is required")
 	}
 
 	// Clean the path to prevent traversal patterns (empty path = list shared roots).
@@ -769,7 +832,7 @@ func (a *App) GetRemoteDirectoryChildren(targetPubKey, path string) ([]map[strin
 		cleanPath = filepath.Clean(path)
 	}
 
-	entries, err := a.netEng.BrowseRemoteDirectory(targetPubKey, cleanPath)
+	entries, err := a.netEng.BrowseRemoteDirectory(targetUUID, cleanPath)
 	if err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("GetRemoteDirectoryChildren failed: %v", err))
 		return nil, err
@@ -793,12 +856,12 @@ func (a *App) CreateShareGroup(name string) (string, error) {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("CreateShareGroup called (name=%s)", name))
 	activeTeam := a.crypto.GetActiveTeam()
 	groupID := deriveUUID(shareGroupNS, []byte(activeTeam+name))
-	myPub := a.crypto.GetPublicKeyBase64()
+	myUUID := a.crypto.GetPersonalUUID()
 	sg := &db.ShareGroup{
 		ID:        groupID,
 		TeamID:    activeTeam,
 		Name:      name,
-		CreatedBy: myPub,
+		CreatedBy: myUUID,
 		CreatedAt: time.Now(),
 	}
 	if err := a.database.CreateShareGroup(a.ctx, sg); err != nil {
@@ -874,12 +937,12 @@ func (a *App) GetShareGroupDirs(groupID string) ([]map[string]interface{}, error
 	return res, nil
 }
 
-func (a *App) StartDownload(targetPubKey, virtualPath, localSavePath string) error {
-	a.log(logger.Debug, "ipc", fmt.Sprintf("StartDownload called (to=%s, file=%s)", targetPubKey, virtualPath))
+func (a *App) StartDownload(targetUUID, virtualPath, localSavePath string) error {
+	a.log(logger.Debug, "ipc", fmt.Sprintf("StartDownload called (to=%s, file=%s)", targetUUID, virtualPath))
 	if a.netEng == nil {
 		return errors.New("network engine not available")
 	}
-	err := a.netEng.StartDownload(targetPubKey, virtualPath, localSavePath)
+	err := a.netEng.StartDownload(targetUUID, virtualPath, localSavePath)
 	if err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("StartDownload failed: %v", err))
 	}

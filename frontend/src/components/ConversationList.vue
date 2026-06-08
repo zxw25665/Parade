@@ -37,7 +37,12 @@ const { listConversations } = useBackend()
 const conversations = computed(() => store.conversations || [])
 
 const sortedConversations = computed(() => {
-  const list = [...conversations.value]
+  const seen = new Set()
+  const list = [...conversations.value].filter(c => {
+    if (seen.has(c.id)) return false
+    seen.add(c.id)
+    return true
+  })
   list.sort((a, b) => {
     if (a.type === 'team' && b.type !== 'team') return -1
     if (a.type !== 'team' && b.type === 'team') return 1

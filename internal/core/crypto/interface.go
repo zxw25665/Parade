@@ -9,6 +9,9 @@ type Engine interface {
 	LoadIdentity(password, filepath string) error
 	// 获取当前成员的公钥 (Base64格式)，用于网络层广播自己的身份
 	GetPublicKeyBase64() string
+	// 获取当前成员的 Curve25519 私钥 (32字节, 原始字节)，用于派生 libp2p 身份密钥
+	// 仅在 LoadIdentity 后可用，否则返回 nil
+	GetPrivateKey() []byte
 	// 返回从公钥确定性派生的个人 UUID（相同身份在不同设备上一致）
 	GetPersonalUUID() string
 	// 返回 LoadIdentity 期间收集的非致命警告（如队伍密钥文件损坏）

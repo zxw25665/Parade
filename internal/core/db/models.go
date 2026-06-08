@@ -65,16 +65,18 @@ type ShareGroupDir struct {
 
 // Conversation represents a chat conversation entity.
 // ID is deterministically derived (DeriveTeamConvID/DerivePrivateConvID) — same secret/pair → same ID across devices.
+// PeerPubkey and MyPubkey now store Parade UUIDs, not Curve25519 pubkeys.
 type Conversation struct {
-	ID          string    `json:"id"`
-	TeamID      string    `json:"team_id"`
-	Type        string    `json:"type"` // "team" or "private"
-	DisplayName string    `json:"display_name"`
-	PeerPubkey  string    `json:"peer_pubkey"`
-	MyPubkey    string    `json:"my_pubkey"`
-	LastHLC     string    `json:"last_hlc"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	TeamID         string    `json:"team_id"`
+	Type           string    `json:"type"`
+	DisplayName    string    `json:"display_name"`
+	PeerPubkey     string    `json:"peer_pubkey"`      // Parade UUID of the remote peer
+	MyPubkey       string    `json:"my_pubkey"`         // Parade UUID of the local user
+	PeerCryptoKey  string    `json:"peer_crypto_key"`   // Curve25519 base64 pubkey for ECDH decryption
+	LastHLC        string    `json:"last_hlc"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // ConversationView extends Conversation with the last message preview.

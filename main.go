@@ -23,6 +23,8 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+const AppVersion = "v0.2.0-libp2p"
+
 var appInstance *app.App
 
 func onSecondInstanceLaunch(_ options.SecondInstanceData) {
@@ -35,6 +37,7 @@ func onSecondInstanceLaunch(_ options.SecondInstanceData) {
 }
 
 func main() {
+	log.Printf("[Parade] %s starting", AppVersion)
 	eventBus := eventbus.New()
 	cry := crypto.NewEngine()
 
@@ -60,9 +63,8 @@ func main() {
 	}
 	defer fileEngine.Close()
 
-	netEngine := network.NewEngine(eventBus, cry)
+	netEngine := network.NewLibp2pEngine(eventBus, cry, logBroker)
 	netEngine.AttachFileEngine(fileEngine)
-	netEngine.WithLogger(logBroker)
 	defer netEngine.Stop()
 
 	wailsUI := app.NewWailsUI()
@@ -70,7 +72,7 @@ func main() {
 	appInstance = app.NewApp(eventBus, cry, database, netEngine, fileEngine, wailsUI, logBroker)
 
 	err = wails.Run(&options.App{
-		Title:  "Parade (游行)",
+		Title:  "Parade " + AppVersion,
 		Width:  1024,
 		Height: 768,
 		AssetServer: &assetserver.Options{

@@ -10,16 +10,18 @@ type NetworkEngine interface {
 	Start(port int) error
 	Stop() error
 	BroadcastTeam(payload []byte) error
-	UnicastPrivate(targetPubKey string, payload []byte) error
+	UnicastPrivate(targetUUID string, payload []byte) error
 	Peers() []map[string]string
-	StartDownload(targetPubKey, virtualPath, localSavePath string) error
+	StartDownload(targetUUID, virtualPath, localSavePath string) error
 	ConnectToPeer(ipAddress string) (*network.PeerConnectResult, error)
-	BrowseRemoteDirectory(targetPubKey, path string) ([]*pb.BrowseEntry, error)
+	BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error)
 	OnForeground()
-	SendConvSyncRequest(targetPubKey, convID, sinceHLC string) error
-	SendConvSyncResponse(targetPubKey, convID string, messagesJSON []byte) error
+	SendConvSyncRequest(targetUUID, convID, sinceHLC string) error
+	SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error
 	SavePeers() error
 	PeersWithStatus() []network.PeerStatus
+	// ResolveUUID resolves a Parade UUID to the Curve25519 pubkey for crypto operations.
+	ResolveUUID(uuid string) (string, error)
 }
 
 // FileEngine 定义了文件层的行为契约
