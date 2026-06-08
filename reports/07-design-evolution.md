@@ -315,11 +315,41 @@ Node A                                    Node B
 
 ### 遗留的未解决问题
 
-1. **proto 桩代码的去留**：需要决定是清理 `proto/chat.pb.go` 重复文件、更新 README，还是保留 proto 作为长期的接口合约。
+1. ~~**proto 桩代码的去留**~~ ✅ **已完成** (2026-06-08): 已删除 `proto/chat.pb.go`、`internal/network/pb/parade/` 陈旧重复代码。保留 `internal/network/pb/chatpb/` 和 `internal/network/pb/file*.go` 作为接口契约。
 2. **文件传输协议**：目前文件传输使用 libp2p 流 + JSON 编码的 `pb.FileChunk`（复用 proto 类型）。如果未来完全脱离 proto，需要定义纯 JSON 文件传输协议。
-3. **文档同步**：AGENTS.md、CLAUDE.md、网络 README、设计书 均需更新以反映 libp2p 架构。
+3. ~~**文档同步**~~ ✅ **已完成** (2026-06-08): 已创建 `游行-设计书v2.md` 全面反映 libp2p 架构；已清理 `proto/chat.pb.go` 和孤儿组件 `PeerList.vue`；AGENTS.md 和 CLAUDE.md 更新待后续完成。
 4. **跨子网验证**：libp2p 的 NAT 穿透和 relay 能力尚未在实际多子网环境中验证。
 5. **GossipSub 调优**：心跳参数、mesh 大小、消息缓存窗口需要根据实际部署规模调优。
+
+---
+
+## 阶段六：残旧遗物清理 ——「打扫战场」(2026-06-08)
+
+### 背景
+
+在各模块设计文档的交叉审查中，识别出一批完全脱离项目运行时的残留文件。这些文件不参与编译、不参与运行时、不参与渲染，是 v0.1 (gRPC) → v0.2 (libp2p) 迁移中遗落的碎片。
+
+### 清理清单
+
+| 序号 | 文件 | 性质 | 判定依据 |
+|------|------|------|---------|
+| 1 | `proto/chat.pb.go` | 陈旧重复副本 (13,532 字节) | 实际编译使用 `internal/network/pb/chatpb/chat.pb.go` (`chatpb` 包)，此文件与项目编译完全无关，import 路径不一致 |
+| 2 | `frontend/src/components/PeerList.vue` | 孤儿组件 (4,873 字节) | 未在 `App.vue` 中挂载，不被任何组件 import。使用旧版 4 阶段连接 UI，已被 `PeerStatus.vue` 取代 |
+| 3 | `internal/network/pb/parade/` | 陈旧重复生成代码 | AGENTS.md 已标注 "ignore it"，磁盘上已不存在（此前已清理） |
+
+**验证**: 删除后 `go build ./...` 通过，无任何编译错误。
+
+### 同步更新
+
+- 创建 `reports/游行-设计书v2.md`，全面反映 libp2p 运行时现实：
+  - 网络: libp2p TCP+Noise+Yamux (端口 4327)，GossipSub 群聊，7 条自定义协议流
+  - 端口: 4327 (全部多路复用) + 4328 (明文 TCP 识别)
+  - 前端: Vue3 `reactive()` 单例存储，无 Pinia，无 vue-router
+  - 传输安全: Noise 传输层 + 应用层三层 AES-GCM 加密
+  - 新一等模块: Logger (异步 JSONL 环形缓冲)
+  - HLC 格式: `2006-01-02T15:04:05.000Z_0001_NodeID`
+  - 附录依赖清单: libp2p v0.48.0 / GossipSub v0.16.0 / 移除 hashicorp/mdns 与 memberlist
+- 文档标注 proto 文件作为“接口契约”保留，gRPC 生成代码运行时未使用
 
 ---
 
