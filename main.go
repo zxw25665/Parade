@@ -9,7 +9,6 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"parade/internal/app"
 	"parade/internal/core/crypto"
@@ -20,21 +19,12 @@ import (
 	"parade/internal/network"
 )
 
-//go:embed all:frontend/dist
+//go:embed all:deprecated/frontend/dist
 var assets embed.FS
 
 const AppVersion = "v0.2.0-libp2p"
 
 var appInstance *app.App
-
-func onSecondInstanceLaunch(_ options.SecondInstanceData) {
-	ctx := appInstance.GetContext()
-	if ctx != nil {
-		runtime.WindowUnminimise(ctx)
-		runtime.Show(ctx)
-	}
-	log.Println("[Parade] Second instance blocked; existing window activated")
-}
 
 func main() {
 	log.Printf("[Parade] %s starting", AppVersion)
@@ -69,7 +59,8 @@ func main() {
 
 	wailsUI := app.NewWailsUI()
 
-	appInstance = app.NewApp(eventBus, cry, database, netEngine, fileEngine, wailsUI, logBroker)
+	appInstance = app.NewApp(eventBus, cry, database, netEngine, fileEngine, wailsUI, logBroker).
+		WithIdentityPath("./.parade_identity")
 
 	err = wails.Run(&options.App{
 		Title:  "Parade " + AppVersion,
@@ -80,14 +71,13 @@ func main() {
 		},
 		OnStartup: func(ctx context.Context) {
 			wailsUI.SetContext(ctx)
-			appInstance.Startup(ctx)
+			appInstance.Startup()
 		},
 		OnShutdown: func(ctx context.Context) {
 			appInstance.Shutdown()
 		},
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "com.parade.app-7f3a9c2e",
-			OnSecondInstanceLaunch: onSecondInstanceLaunch,
+			UniqueId: "com.parade.app-7f3a9c2e",
 		},
 		Bind: []interface{}{
 			appInstance,
