@@ -1,7 +1,6 @@
 ﻿package app_test
 
 import (
-	"context"
 	"os"
 	"testing"
 	"time"
@@ -90,7 +89,7 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 	mockUI := &IntegrationMockUI{}
 
 	application := app.NewApp(bus, cry, database, mockNet, mockFile, mockUI, nil)
-	application.Startup(context.Background())
+	application.Startup()
 
 	pwd := "safe_password_123"
 
@@ -147,7 +146,7 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 		newUI := &IntegrationMockUI{}
 
 		newApp := app.NewApp(newBus, newCry, newDB, mockNet, mockFile, newUI, nil)
-		newApp.Startup(context.Background())
+		newApp.Startup()
 
 		if err := newApp.Login(pwd); err != nil {
 			t.Fatalf("Login after restart failed: %v", err)
@@ -194,7 +193,7 @@ func TestSystem_JoinTeamReusesUUID(t *testing.T) {
 	mockUI := &IntegrationMockUI{}
 
 	app1 := app.NewApp(bus1, cry1, db1, mockNet, mockFile, mockUI, nil)
-	app1.Startup(context.Background())
+	app1.Startup()
 
 	if err := app1.Register(pwd); err != nil {
 		t.Fatalf("Register failed: %v", err)
@@ -220,7 +219,7 @@ func TestSystem_JoinTeamReusesUUID(t *testing.T) {
 	mockUI2 := &IntegrationMockUI{}
 
 	app2 := app.NewApp(bus2, cry2, db2, mockNet2, mockFile, mockUI2, nil)
-	app2.Startup(context.Background())
+	app2.Startup()
 
 	if err := app2.Login(pwd); err != nil {
 		t.Fatalf("Login after restart failed: %v", err)
@@ -263,7 +262,7 @@ func TestSystem_LoginAutoStartsNetwork(t *testing.T) {
 	mockUI := &IntegrationMockUI{}
 
 	app1 := app.NewApp(bus1, cry1, db1, mockNet, mockFile, mockUI, nil)
-	app1.Startup(context.Background())
+	app1.Startup()
 	app1.Register(pwd)
 	app1.Login(pwd)
 	app1.JoinTeamWithName("Auto Team", "auto_secret")
@@ -277,7 +276,7 @@ func TestSystem_LoginAutoStartsNetwork(t *testing.T) {
 	mockUI2 := &IntegrationMockUI{}
 
 	app2 := app.NewApp(bus2, cry2, db2, mockNet2, mockFile, mockUI2, nil)
-	app2.Startup(context.Background())
+	app2.Startup()
 
 	if err := app2.Login(pwd); err != nil {
 		t.Fatalf("Login failed: %v", err)
@@ -317,7 +316,7 @@ func TestSystem_NoDuplicateOnSelfSender(t *testing.T) {
 	mockUI := &IntegrationMockUI{}
 
 	application := app.NewApp(bus, cry, database, mockNet, mockFile, mockUI, nil)
-	application.Startup(context.Background())
+	application.Startup()
 
 	if err := application.Register(pwd); err != nil {
 		t.Fatalf("Register failed: %v", err)

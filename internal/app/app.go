@@ -21,7 +21,7 @@ import (
 	"parade/internal/network"
 )
 
-const IdentityFile = "./.parade_identity"
+const DefaultIdentityFile = "./.parade_identity"
 
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
@@ -56,10 +56,13 @@ type App struct {
 	peerJoinedAt  map[string]time.Time
 	convUpdatedAt map[string]time.Time
 	peerJoinedMu  sync.Mutex
+
+	identityPath string
 }
 
 func NewApp(bus eventbus.EventBus, cry crypto.Engine, d db.Database, net NetworkEngine, file FileEngine, ui Frontend, logr logger.Logger) *App {
 	return &App{
+		ctx:           context.Background(),
 		evBus:         bus,
 		crypto:        cry,
 		database:      d,
@@ -69,7 +72,13 @@ func NewApp(bus eventbus.EventBus, cry crypto.Engine, d db.Database, net Network
 		logr:          logr,
 		peerJoinedAt:  make(map[string]time.Time),
 		convUpdatedAt: make(map[string]time.Time),
+		identityPath:  DefaultIdentityFile,
 	}
+}
+
+func (a *App) WithIdentityPath(path string) *App {
+	a.identityPath = path
+	return a
 }
 
 func (a *App) log(level logger.LogLevel, source, msg string) {
@@ -89,12 +98,7 @@ func (a *App) log(level logger.LogLevel, source, msg string) {
 	}
 }
 
-// Startup 在 Wails 启动时调用
-func (a *App) Startup(ctx context.Context) {
-	a.ctx = ctx
-	if w, ok := a.ui.(interface{ SetContext(context.Context) }); ok {
-		w.SetContext(ctx)
-	}
+func (a *App) Startup() {
 	if broker, ok := a.logr.(*logger.LogBroker); ok {
 		broker.SetCallback(func(entry logger.LogEntry) {
 			a.ui.Notify("ui_log", map[string]interface{}{
@@ -107,11 +111,6 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	a.registerEventSubscribers()
 	a.log(logger.Info, "system", "app started")
-}
-
-// GetContext returns the stored Wails context, used for single-instance window activation.
-func (a *App) GetContext() context.Context {
-	return a.ctx
 }
 
 // Shutdown 清理 EventBus 订阅，防止内存泄漏
@@ -366,7 +365,7 @@ func (a *App) registerEventSubscribers() {
 
 func (a *App) Register(password string) error {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("Register called (%d chars)", len(password)))
-	err := a.crypto.RegisterIdentity(password, IdentityFile)
+	err := a.crypto.RegisterIdentity(password, a.identityPath)
 	if err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("Register failed: %v", err))
 	}
@@ -375,7 +374,7 @@ func (a *App) Register(password string) error {
 
 func (a *App) Login(password string) error {
 	a.log(logger.Debug, "ipc", "Login called")
-	if err := a.crypto.LoadIdentity(password, IdentityFile); err != nil {
+	if err := a.crypto.LoadIdentity(password, a.identityPath); err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("Login failed: %v", err))
 		return err
 	}
@@ -393,7 +392,7 @@ func (a *App) Login(password string) error {
 
 func (a *App) CheckHasIdentity() bool {
 	a.log(logger.Debug, "ipc", "CheckHasIdentity called")
-	_, err := os.Stat(IdentityFile)
+	_, err := os.Stat(a.identityPath)
 	return !os.IsNotExist(err)
 }
 
