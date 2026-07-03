@@ -9,6 +9,7 @@ import (
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
+	"parade/internal/core/sync"
 	"parade/internal/network"
 	pb "parade/internal/network/pb"
 )
@@ -47,6 +48,17 @@ func (n *IntegrationMockNetwork) PeersWithStatus() []network.PeerStatus { return
 func (n *IntegrationMockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error) {
 	return nil, nil
 }
+func (n *IntegrationMockNetwork) SendMerkleRootRequest(targetUUID, convID string) ([]byte, error) {
+	return make([]byte, 32), nil
+}
+func (n *IntegrationMockNetwork) SendBucketCompareRequest(targetUUID, convID string, level int, paths []string) ([]sync.BucketInfo, error) {
+	return nil, nil
+}
+func (n *IntegrationMockNetwork) SendFetchMessagesRequest(targetUUID, convID, bucketPath, sinceHLC string) ([]*db.Message, error) {
+	return nil, nil
+}
+func (n *IntegrationMockNetwork) SendPushMessages(targetUUID, convID string, messages []*db.Message) error { return nil }
+func (n *IntegrationMockNetwork) SetMerkleSyncHandler(handler sync.MerkleSyncHandler) {}
 func (n *IntegrationMockNetwork) ResolveUUID(uuid string) (string, error) { return "mock_resolved_pubkey", nil }
 
 type IntegrationMockFile struct{}

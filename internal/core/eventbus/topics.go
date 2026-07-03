@@ -53,3 +53,12 @@ type ConversationSyncPayload struct {
 	SinceHLC       string
 	Messages       []byte // JSON-serialized []*db.Message for sync response
 }
+
+// MerkleSyncCompletePayload is published when a Merkle sync completes.
+type MerkleSyncCompletePayload struct {
+	PeerUUID       string
+	ConversationID string
+	MessagesSynced int
+}
+
+const TopicMerkleSyncComplete = "sync:merkle_complete"

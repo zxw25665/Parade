@@ -1,6 +1,8 @@
 ﻿package app
 
 import (
+	"parade/internal/core/db"
+	"parade/internal/core/sync"
 	"parade/internal/network"
 	pb "parade/internal/network/pb"
 )
@@ -18,6 +20,11 @@ type NetworkEngine interface {
 	OnForeground()
 	SendConvSyncRequest(targetUUID, convID, sinceHLC string) error
 	SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error
+	SendMerkleRootRequest(targetUUID, convID string) ([]byte, error)
+	SendBucketCompareRequest(targetUUID, convID string, level int, paths []string) ([]sync.BucketInfo, error)
+	SendFetchMessagesRequest(targetUUID, convID, bucketPath, sinceHLC string) ([]*db.Message, error)
+	SendPushMessages(targetUUID, convID string, messages []*db.Message) error
+	SetMerkleSyncHandler(handler sync.MerkleSyncHandler)
 	SavePeers() error
 	PeersWithStatus() []network.PeerStatus
 	// ResolveUUID resolves a Parade UUID to the Curve25519 pubkey for crypto operations.
