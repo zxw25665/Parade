@@ -15,8 +15,10 @@ import (
 	"github.com/multiformats/go-multiaddr"
 
 	"parade/internal/core/crypto"
+	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
 	"parade/internal/core/logger"
+	merkleSync "parade/internal/core/sync"
 	pb "parade/internal/network/pb"
 )
 
@@ -38,17 +40,19 @@ type libp2pEngine struct {
 	uuidMap map[string]peer.ID
 	peerMu  sync.RWMutex
 
-	host      *libp2pHost
-	chat      *libp2pChat
-	file      *libp2pFile
-	sync      *libp2pSync
-	bus       eventbus.EventBus
-	crypto    crypto.Engine
-	logr      logger.Logger
-	port      int
+	host        *libp2pHost
+	chat        *libp2pChat
+	file        *libp2pFile
+	linearSync  *libp2pSync
+	merkleSync  *libp2pMerkleSync
+	bus         eventbus.EventBus
+	crypto      crypto.Engine
+	logr        logger.Logger
+	port        int
 
-	identifyLn net.Listener
-	fileEngine FileTransferEngine
+	identifyLn   net.Listener
+	fileEngine   FileTransferEngine
+	merkleSyncH  merkleSync.MerkleSyncHandler
 }
 
 func NewLibp2pEngine(bus eventbus.EventBus, cry crypto.Engine, logr logger.Logger) *libp2pEngine {
@@ -328,12 +332,23 @@ func (e *libp2pEngine) Start(port int) error {
 		stream.Write([]byte{0x01})
 	})
 
-	e.sync = NewLibp2pSync(host.Host, e.bus, e.logr)
-	e.sync.onUUIDLookup = func(pid peer.ID) string {
+	e.linearSync = NewLibp2pSync(host.Host, e.bus, e.logr)
+	e.linearSync.onUUIDLookup = func(pid peer.ID) string {
 		if ident := e.getPeerIdentity(pid); ident != nil {
 			return ident.UUID
 		}
 		return pid.String()
+	}
+
+	e.merkleSync = NewLibp2pMerkleSync(host.Host, e.bus, e.logr)
+	e.merkleSync.onUUIDLookup = func(pid peer.ID) string {
+		if ident := e.getPeerIdentity(pid); ident != nil {
+			return ident.UUID
+		}
+		return pid.String()
+	}
+	if e.merkleSyncH != nil {
+		e.merkleSync.handler = e.merkleSyncH
 	}
 
 	e.startIdentifyServer(port + 1)
@@ -360,7 +375,7 @@ func (e *libp2pEngine) Stop() error {
 	e.started = false
 	e.host = nil
 	e.chat = nil
-	e.sync = nil
+	e.linearSync = nil
 	e.identifyLn = nil
 	e.mu.Unlock()
 
@@ -499,25 +514,76 @@ func (e *libp2pEngine) BrowseRemoteDirectory(targetUUID, path string) ([]*pb.Bro
 func (e *libp2pEngine) OnForeground() {}
 
 func (e *libp2pEngine) SendConvSyncRequest(targetUUID, convID, sinceHLC string) error {
-	if e.sync == nil {
+	if e.linearSync == nil {
 		return fmt.Errorf("sync not initialized")
 	}
 	targetPeerID, ok := e.getPeerID(targetUUID)
 	if !ok {
 		return fmt.Errorf("peer not found for UUID %s", targetUUID)
 	}
-	return e.sync.SendConvSyncRequest(targetPeerID, convID, sinceHLC)
+	return e.linearSync.SendConvSyncRequest(targetPeerID, convID, sinceHLC)
 }
 
 func (e *libp2pEngine) SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error {
-	if e.sync == nil {
+	if e.linearSync == nil {
 		return fmt.Errorf("sync not initialized")
 	}
 	targetPeerID, ok := e.getPeerID(targetUUID)
 	if !ok {
 		return fmt.Errorf("peer not found for UUID %s", targetUUID)
 	}
-	return e.sync.SendConvSyncResponse(targetPeerID, convID, messagesJSON)
+	return e.linearSync.SendConvSyncResponse(targetPeerID, convID, messagesJSON)
+}
+
+func (e *libp2pEngine) SendMerkleRootRequest(targetUUID, convID string) ([]byte, error) {
+	if e.merkleSync == nil {
+		return nil, fmt.Errorf("merkle sync not initialized")
+	}
+	targetPeerID, ok := e.getPeerID(targetUUID)
+	if !ok {
+		return nil, fmt.Errorf("peer not found for UUID %s", targetUUID)
+	}
+	return e.merkleSync.SendMerkleRootRequest(targetPeerID, convID)
+}
+
+func (e *libp2pEngine) SendBucketCompareRequest(targetUUID, convID string, level int, paths []string) ([]merkleSync.BucketInfo, error) {
+	if e.merkleSync == nil {
+		return nil, fmt.Errorf("merkle sync not initialized")
+	}
+	targetPeerID, ok := e.getPeerID(targetUUID)
+	if !ok {
+		return nil, fmt.Errorf("peer not found for UUID %s", targetUUID)
+	}
+	return e.merkleSync.SendBucketCompareRequest(targetPeerID, convID, level, paths)
+}
+
+func (e *libp2pEngine) SendFetchMessagesRequest(targetUUID, convID, bucketPath, sinceHLC string) ([]*db.Message, error) {
+	if e.merkleSync == nil {
+		return nil, fmt.Errorf("merkle sync not initialized")
+	}
+	targetPeerID, ok := e.getPeerID(targetUUID)
+	if !ok {
+		return nil, fmt.Errorf("peer not found for UUID %s", targetUUID)
+	}
+	return e.merkleSync.SendFetchMessagesRequest(targetPeerID, convID, bucketPath, sinceHLC)
+}
+
+func (e *libp2pEngine) SendPushMessages(targetUUID, convID string, messages []*db.Message) error {
+	if e.merkleSync == nil {
+		return fmt.Errorf("merkle sync not initialized")
+	}
+	targetPeerID, ok := e.getPeerID(targetUUID)
+	if !ok {
+		return fmt.Errorf("peer not found for UUID %s", targetUUID)
+	}
+	return e.merkleSync.SendPushMessages(targetPeerID, convID, messages)
+}
+
+func (e *libp2pEngine) SetMerkleSyncHandler(handler merkleSync.MerkleSyncHandler) {
+	e.merkleSyncH = handler
+	if e.merkleSync != nil {
+		e.merkleSync.handler = handler
+	}
 }
 
 func (e *libp2pEngine) SavePeers() error {

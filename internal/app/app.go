@@ -18,6 +18,7 @@ import (
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
 	"parade/internal/core/logger"
+	merkleSync "parade/internal/core/sync"
 	"parade/internal/network"
 )
 
@@ -58,6 +59,9 @@ type App struct {
 	peerJoinedMu  sync.Mutex
 
 	identityPath string
+
+	syncOrch  *merkleSync.SyncOrchestrator
+	freezeMgr *merkleSync.FreezeManager
 }
 
 func NewApp(bus eventbus.EventBus, cry crypto.Engine, d db.Database, net NetworkEngine, file FileEngine, ui Frontend, logr logger.Logger) *App {
@@ -110,12 +114,30 @@ func (a *App) Startup() {
 		})
 	}
 	a.registerEventSubscribers()
+	a.initMerkleSync()
 	a.log(logger.Info, "system", "app started")
+}
+
+func (a *App) initMerkleSync() {
+	if a.database == nil || a.netEng == nil {
+		return
+	}
+	a.freezeMgr = merkleSync.NewFreezeManager(a.database)
+	a.freezeMgr.Start()
+
+	a.syncOrch = merkleSync.NewSyncOrchestrator(a.database, a.netEng, a.logr)
+
+	if ms, ok := a.netEng.(interface{ SetMerkleSyncHandler(merkleSync.MerkleSyncHandler) }); ok {
+		ms.SetMerkleSyncHandler(a.syncOrch)
+	}
 }
 
 // Shutdown 清理 EventBus 订阅，防止内存泄漏
 func (a *App) Shutdown() {
 	a.log(logger.Info, "system", "app shutting down")
+	if a.freezeMgr != nil {
+		a.freezeMgr.Stop()
+	}
 	if a.netEng != nil {
 		_ = a.netEng.SavePeers()
 	}
@@ -661,7 +683,16 @@ func (a *App) syncAllConversationsWithPeer(peerUUID string) {
 	}
 	a.log(logger.Debug, "sync", fmt.Sprintf("syncAllConversationsWithPeer: %d conversations to sync to %s", len(convs), truncate(peerUUID, 16)))
 	for _, cv := range convs {
-		_ = a.netEng.SendConvSyncRequest(peerUUID, cv.ID, "")
+		if a.syncOrch != nil {
+			go func(convID string) {
+				if err := a.syncOrch.SyncConversation(a.ctx, peerUUID, convID); err != nil {
+					a.log(logger.Warning, "sync", fmt.Sprintf("merkle sync failed for conv=%s: %v, falling back to linear sync", convID[:8], err))
+					_ = a.netEng.SendConvSyncRequest(peerUUID, convID, "")
+				}
+			}(cv.ID)
+		} else {
+			_ = a.netEng.SendConvSyncRequest(peerUUID, cv.ID, "")
+		}
 	}
 }
 

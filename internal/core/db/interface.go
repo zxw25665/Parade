@@ -59,6 +59,17 @@ type Database interface {
 	GetConversationMessagesSinceHLC(ctx context.Context, convID string, sinceHLC string, limit int) ([]*Message, error)
 	UpdateConversationLastHLC(ctx context.Context, convID string, hlc string) error
 	ListAllConversations(ctx context.Context) ([]*Conversation, error)
+
+	UpsertMerkleNode(ctx context.Context, node *MerkleNode) error
+	GetMerkleNode(ctx context.Context, convID, bucketPath string) (*MerkleNode, error)
+	GetMerkleNodesByLevel(ctx context.Context, convID string, level int) ([]*MerkleNode, error)
+	GetMerkleNodesByParent(ctx context.Context, convID, parentPath string) ([]*MerkleNode, error)
+	DeleteMerkleNodesByConv(ctx context.Context, convID string) error
+
+	GetFrozenState(ctx context.Context, convID string) (*FreezeState, error)
+	UpsertFrozenState(ctx context.Context, state *FreezeState) error
+
+	GetMessagesInBucket(ctx context.Context, convID, bucketPath string, level int) ([]*Message, error)
 }
 
 // DBTx 暴露了在事务中可用的操作
@@ -66,4 +77,6 @@ type DBTx interface {
 	InsertMessageTx(ctx context.Context, msg *Message) error
 	UpsertFileLogTx(ctx context.Context, log *FileLog) error
 	UpsertConversationTx(ctx context.Context, conv *Conversation) error
+	UpsertMerkleNodeTx(ctx context.Context, node *MerkleNode) error
+	UpsertFrozenStateTx(ctx context.Context, state *FreezeState) error
 }
