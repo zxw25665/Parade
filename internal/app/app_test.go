@@ -81,7 +81,7 @@ func setup(t *testing.T) (*App, *MockNetwork, *MockUI, func()) {
 	ui := &MockUI{}
 
 	app := NewApp(eb, cr, d, net, file, ui, nil)
-	app.Startup(context.Background())
+	app.Startup()
 
 	return app, net, ui, func() {
 		d.Close()
@@ -134,7 +134,7 @@ func TestApp_FullFlow(t *testing.T) {
 func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 	a, _, _, cleanup := setup(t)
 	defer cleanup()
-	defer os.Remove(IdentityFile)
+	defer os.Remove(DefaultIdentityFile)
 
 	_ = a.Register("123")
 	_ = a.Login("123")
@@ -165,7 +165,7 @@ func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 func TestSendTeamChat_ReceiverID(t *testing.T) {
 	a, _, _, cleanup := setup(t)
 	defer cleanup()
-	defer os.Remove(IdentityFile)
+	defer os.Remove(DefaultIdentityFile)
 
 	_ = a.Register("123")
 	_ = a.Login("123")
