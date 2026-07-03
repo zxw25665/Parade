@@ -85,3 +85,21 @@ type ConversationView struct {
 	LastMessage string    `json:"last_message"`
 	LastMsgTime time.Time `json:"last_msg_time"`
 }
+
+// MerkleNode represents a node in the Sparse Time Bucket Merkle Tree.
+type MerkleNode struct {
+	ConvID       string    `json:"conv_id"`
+	BucketPath   string    `json:"bucket_path"`
+	Level        int       `json:"level"`
+	Hash         []byte    `json:"hash"`
+	Frozen       bool      `json:"frozen"`
+	FrozenAt     *time.Time `json:"frozen_at,omitempty"`
+	MessageCount int       `json:"message_count"`
+}
+
+// FreezeState tracks the last frozen bucket for a conversation.
+type FreezeState struct {
+	ConvID           string    `json:"conv_id"`
+	LastFrozenBucket string    `json:"last_frozen_bucket"`
+	LastFrozenAt     time.Time `json:"last_frozen_at"`
+}

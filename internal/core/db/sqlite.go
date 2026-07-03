@@ -198,6 +198,37 @@ var migrations = []Migration{
 				return err
 			},
 		},
+		{
+			Version: 11,
+			Name:    "merkle_tree_nodes",
+			Up: func(tx *sql.Tx) error {
+				_, err := tx.Exec(`
+					CREATE TABLE IF NOT EXISTS merkle_tree_nodes (
+						conv_id TEXT NOT NULL,
+						bucket_path TEXT NOT NULL,
+						level INTEGER NOT NULL,
+						hash BLOB NOT NULL,
+						frozen INTEGER DEFAULT 0,
+						frozen_at TEXT,
+						message_count INTEGER DEFAULT 0,
+						PRIMARY KEY (conv_id, bucket_path)
+					);
+					CREATE INDEX IF NOT EXISTS idx_merkle_conv_level ON merkle_tree_nodes(conv_id, level);
+				`)
+				if err != nil {
+					return err
+				}
+				_, err = tx.Exec(`
+					CREATE TABLE IF NOT EXISTS merkle_freeze_state (
+						conv_id TEXT NOT NULL,
+						last_frozen_bucket TEXT NOT NULL,
+						last_frozen_at TEXT NOT NULL,
+						PRIMARY KEY (conv_id)
+					);
+				`)
+				return err
+			},
+		},
 	}
 
 // NewSQLiteDB 初始化数据库，执行高并发核心优化并建表
@@ -767,6 +798,197 @@ func (db *sqliteDB) ListAllConversations(ctx context.Context) ([]*Conversation, 
 		convs = append(convs, c)
 	}
 	return convs, rows.Err()
+}
+
+func (db *sqliteDB) UpsertMerkleNode(ctx context.Context, node *MerkleNode) error {
+	var frozenAt interface{}
+	if node.FrozenAt != nil {
+		frozenAt = node.FrozenAt.Format(time.RFC3339)
+	}
+	frozenVal := 0
+	if node.Frozen {
+		frozenVal = 1
+	}
+	query := `INSERT OR REPLACE INTO merkle_tree_nodes (conv_id, bucket_path, level, hash, frozen, frozen_at, message_count)
+	          VALUES (?, ?, ?, ?, ?, ?, ?)`
+	_, err := db.conn.ExecContext(ctx, query,
+		node.ConvID, node.BucketPath, node.Level, node.Hash, frozenVal, frozenAt, node.MessageCount)
+	return err
+}
+
+func (db *sqliteDB) GetMerkleNode(ctx context.Context, convID, bucketPath string) (*MerkleNode, error) {
+	query := `SELECT conv_id, bucket_path, level, hash, frozen, frozen_at, message_count
+	          FROM merkle_tree_nodes WHERE conv_id = ? AND bucket_path = ?`
+	row := db.conn.QueryRowContext(ctx, query, convID, bucketPath)
+	return scanMerkleNode(row)
+}
+
+func (db *sqliteDB) GetMerkleNodesByLevel(ctx context.Context, convID string, level int) ([]*MerkleNode, error) {
+	query := `SELECT conv_id, bucket_path, level, hash, frozen, frozen_at, message_count
+	          FROM merkle_tree_nodes WHERE conv_id = ? AND level = ? ORDER BY bucket_path ASC`
+	rows, err := db.conn.QueryContext(ctx, query, convID, level)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMerkleNodes(rows)
+}
+
+func (db *sqliteDB) GetMerkleNodesByParent(ctx context.Context, convID, parentPath string) ([]*MerkleNode, error) {
+	query := `SELECT conv_id, bucket_path, level, hash, frozen, frozen_at, message_count
+	          FROM merkle_tree_nodes WHERE conv_id = ? AND bucket_path LIKE ? ORDER BY bucket_path ASC`
+	rows, err := db.conn.QueryContext(ctx, query, convID, parentPath+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMerkleNodes(rows)
+}
+
+func (db *sqliteDB) DeleteMerkleNodesByConv(ctx context.Context, convID string) error {
+	_, err := db.conn.ExecContext(ctx, `DELETE FROM merkle_tree_nodes WHERE conv_id = ?`, convID)
+	return err
+}
+
+func (db *sqliteDB) GetFrozenState(ctx context.Context, convID string) (*FreezeState, error) {
+	query := `SELECT conv_id, last_frozen_bucket, last_frozen_at FROM merkle_freeze_state WHERE conv_id = ?`
+	row := db.conn.QueryRowContext(ctx, query, convID)
+	state := &FreezeState{}
+	var frozenAt string
+	err := row.Scan(&state.ConvID, &state.LastFrozenBucket, &frozenAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	state.LastFrozenAt, err = time.Parse(time.RFC3339, frozenAt)
+	if err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+func (db *sqliteDB) UpsertFrozenState(ctx context.Context, state *FreezeState) error {
+	query := `INSERT OR REPLACE INTO merkle_freeze_state (conv_id, last_frozen_bucket, last_frozen_at)
+	          VALUES (?, ?, ?)`
+	_, err := db.conn.ExecContext(ctx, query, state.ConvID, state.LastFrozenBucket, state.LastFrozenAt.Format(time.RFC3339))
+	return err
+}
+
+func (db *sqliteDB) GetMessagesInBucket(ctx context.Context, convID, bucketPath string, level int) ([]*Message, error) {
+	startHLC, endHLC, err := bucketTimeRange(bucketPath, level)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT id, hlc, sender_id, receiver_id, team_id, channel_id, conversation_id, content, type, created_at
+	          FROM messages WHERE conversation_id = ? AND hlc >= ? AND hlc < ? ORDER BY hlc ASC`
+	rows, err := db.conn.QueryContext(ctx, query, convID, startHLC, endHLC)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMessages(rows)
+}
+
+// ---- 事务包装器方法实现 ----
+
+func (w *dbTxWrapper) UpsertMerkleNodeTx(ctx context.Context, node *MerkleNode) error {
+	var frozenAt interface{}
+	if node.FrozenAt != nil {
+		frozenAt = node.FrozenAt.Format(time.RFC3339)
+	}
+	frozenVal := 0
+	if node.Frozen {
+		frozenVal = 1
+	}
+	query := `INSERT OR REPLACE INTO merkle_tree_nodes (conv_id, bucket_path, level, hash, frozen, frozen_at, message_count)
+	          VALUES (?, ?, ?, ?, ?, ?, ?)`
+	_, err := w.tx.ExecContext(ctx, query,
+		node.ConvID, node.BucketPath, node.Level, node.Hash, frozenVal, frozenAt, node.MessageCount)
+	return err
+}
+
+func (w *dbTxWrapper) UpsertFrozenStateTx(ctx context.Context, state *FreezeState) error {
+	query := `INSERT OR REPLACE INTO merkle_freeze_state (conv_id, last_frozen_bucket, last_frozen_at)
+	          VALUES (?, ?, ?)`
+	_, err := w.tx.ExecContext(ctx, query, state.ConvID, state.LastFrozenBucket, state.LastFrozenAt.Format(time.RFC3339))
+	return err
+}
+
+// ---- 私有辅助函数 ----
+
+func scanMerkleNode(row interface{ Scan(...interface{}) error }) (*MerkleNode, error) {
+	node := &MerkleNode{}
+	var frozenVal int
+	var frozenAt sql.NullString
+	err := row.Scan(&node.ConvID, &node.BucketPath, &node.Level, &node.Hash, &frozenVal, &frozenAt, &node.MessageCount)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	node.Frozen = frozenVal == 1
+	if frozenAt.Valid && frozenAt.String != "" {
+		t, err := time.Parse(time.RFC3339, frozenAt.String)
+		if err == nil {
+			node.FrozenAt = &t
+		}
+	}
+	return node, nil
+}
+
+func scanMerkleNodes(rows *sql.Rows) ([]*MerkleNode, error) {
+	var nodes []*MerkleNode
+	for rows.Next() {
+		node, err := scanMerkleNode(rows)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
+func bucketTimeRange(bucketPath string, level int) (startHLC, endHLC string, err error) {
+	var t time.Time
+	switch level {
+	case 0: // year
+		t, err = time.Parse("2006", bucketPath)
+		if err != nil {
+			return "", "", err
+		}
+		startHLC = t.Format("2006-01-02T15:04:05.000Z") + "_0000_"
+		endHLC = t.AddDate(1, 0, 0).Format("2006-01-02T15:04:05.000Z") + "_0000_"
+	case 1: // month
+		t, err = time.Parse("2006-01", bucketPath)
+		if err != nil {
+			return "", "", err
+		}
+		startHLC = t.Format("2006-01-02T15:04:05.000Z") + "_0000_"
+		endHLC = t.AddDate(0, 1, 0).Format("2006-01-02T15:04:05.000Z") + "_0000_"
+	case 2: // day
+		t, err = time.Parse("2006-01-02", bucketPath)
+		if err != nil {
+			return "", "", err
+		}
+		startHLC = t.Format("2006-01-02T15:04:05.000Z") + "_0000_"
+		endHLC = t.AddDate(0, 0, 1).Format("2006-01-02T15:04:05.000Z") + "_0000_"
+	case 3: // hour
+		t, err = time.Parse("2006-01-02T15", bucketPath)
+		if err != nil {
+			return "", "", err
+		}
+		startHLC = t.Format("2006-01-02T15:04:05.000Z") + "_0000_"
+		endHLC = t.Add(1 * time.Hour).Format("2006-01-02T15:04:05.000Z") + "_0000_"
+	default:
+		return "", "", fmt.Errorf("invalid bucket level %d", level)
+	}
+	return startHLC, endHLC, nil
 }
 
 // scanMessages reads Message rows from a *sql.Rows.
