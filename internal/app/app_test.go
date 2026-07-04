@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,9 +12,8 @@ import (
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
-	"parade/internal/core/sync"
+	syncpkg "parade/internal/core/sync"
 	"parade/internal/network"
-	pb "parade/internal/network/pb"
 )
 
 type MockNetwork struct {
@@ -46,20 +46,20 @@ func (m *MockNetwork) SendConvSyncRequest(targetUUID, convID, sinceHLC string) e
 func (m *MockNetwork) SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error { return nil }
 func (m *MockNetwork) SavePeers() error { return nil }
 func (m *MockNetwork) PeersWithStatus() []network.PeerStatus { return nil }
-func (m *MockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error) {
+func (m *MockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*network.BrowseEntry, error) {
 	return nil, nil
 }
 func (m *MockNetwork) SendMerkleRootRequest(targetUUID, convID string) ([]byte, error) {
 	return make([]byte, 32), nil
 }
-func (m *MockNetwork) SendBucketCompareRequest(targetUUID, convID string, level int, paths []string) ([]sync.BucketInfo, error) {
+func (m *MockNetwork) SendBucketCompareRequest(targetUUID, convID string, level int, paths []string) ([]syncpkg.BucketInfo, error) {
 	return nil, nil
 }
 func (m *MockNetwork) SendFetchMessagesRequest(targetUUID, convID, bucketPath, sinceHLC string) ([]*db.Message, error) {
 	return nil, nil
 }
 func (m *MockNetwork) SendPushMessages(targetUUID, convID string, messages []*db.Message) error { return nil }
-func (m *MockNetwork) SetMerkleSyncHandler(handler sync.MerkleSyncHandler) {}
+func (m *MockNetwork) SetMerkleSyncHandler(handler syncpkg.MerkleSyncHandler) {}
 func (m *MockNetwork) ResolveUUID(uuid string) (string, error) { return "mock_resolved_pubkey", nil }
 
 type MockFile struct{}
@@ -71,13 +71,28 @@ func (m *MockFile) GetDirectoryChildren(p string) (interface{}, error) { return 
 func (m *MockFile) GetSharedRoots() []string { return nil }
 
 type MockUI struct {
+	mu        sync.Mutex
 	EventName string
 	Payload   interface{}
 }
 
 func (m *MockUI) Notify(name string, data interface{}) {
+	m.mu.Lock()
 	m.EventName = name
 	m.Payload = data
+	m.mu.Unlock()
+}
+
+func (m *MockUI) GetEventName() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.EventName
+}
+
+func (m *MockUI) GetPayload() interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Payload
 }
 
 func setup(t *testing.T) (*App, *MockNetwork, *MockUI, func()) {
@@ -134,10 +149,10 @@ func TestApp_FullFlow(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if ui.EventName != "ui_new_message" {
-		t.Errorf("UI not notified")
+	if ui.GetEventName() != "ui_new_message" {
+		t.Errorf("UI not notified, got %q", ui.GetEventName())
 	}
-	uiData := ui.Payload.(map[string]interface{})
+	uiData := ui.GetPayload().(map[string]interface{})
 	if uiData["content"] != "Incoming Message" {
 		t.Errorf("UI content mismatch")
 	}

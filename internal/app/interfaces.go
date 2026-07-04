@@ -4,7 +4,6 @@ import (
 	"parade/internal/core/db"
 	"parade/internal/core/sync"
 	"parade/internal/network"
-	pb "parade/internal/network/pb"
 )
 
 // NetworkEngine 定义了网络层的行为契约
@@ -16,7 +15,7 @@ type NetworkEngine interface {
 	Peers() []map[string]string
 	StartDownload(targetUUID, virtualPath, localSavePath string) error
 	ConnectToPeer(ipAddress string) (*network.PeerConnectResult, error)
-	BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error)
+	BrowseRemoteDirectory(targetUUID, path string) ([]*network.BrowseEntry, error)
 	OnForeground()
 	SendConvSyncRequest(targetUUID, convID, sinceHLC string) error
 	SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error

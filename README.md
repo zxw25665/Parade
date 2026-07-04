@@ -192,4 +192,4 @@ go test -bench=. ./internal/core/sync/...     # 基准测试
 
 - mDNS 节点发现尚未正常工作；节点通过显式 IP 连接
 - 旧 Wails 前端在 `deprecated/frontend/` — 替代方案待定
-- gRPC protobuf 存根在 `proto/` 中，为未来迁移预留
+- gRPC protobuf 相关代码已移除

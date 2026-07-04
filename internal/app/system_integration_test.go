@@ -2,6 +2,7 @@
 
 import (
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,9 +10,8 @@ import (
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
-	"parade/internal/core/sync"
+	syncpkg "parade/internal/core/sync"
 	"parade/internal/network"
-	pb "parade/internal/network/pb"
 )
 
 type IntegrationMockNetwork struct {
@@ -45,20 +45,20 @@ func (n *IntegrationMockNetwork) SendConvSyncRequest(targetUUID, convID, sinceHL
 func (n *IntegrationMockNetwork) SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error { return nil }
 func (n *IntegrationMockNetwork) SavePeers() error { return nil }
 func (n *IntegrationMockNetwork) PeersWithStatus() []network.PeerStatus { return nil }
-func (n *IntegrationMockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error) {
+func (n *IntegrationMockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*network.BrowseEntry, error) {
 	return nil, nil
 }
 func (n *IntegrationMockNetwork) SendMerkleRootRequest(targetUUID, convID string) ([]byte, error) {
 	return make([]byte, 32), nil
 }
-func (n *IntegrationMockNetwork) SendBucketCompareRequest(targetUUID, convID string, level int, paths []string) ([]sync.BucketInfo, error) {
+func (n *IntegrationMockNetwork) SendBucketCompareRequest(targetUUID, convID string, level int, paths []string) ([]syncpkg.BucketInfo, error) {
 	return nil, nil
 }
 func (n *IntegrationMockNetwork) SendFetchMessagesRequest(targetUUID, convID, bucketPath, sinceHLC string) ([]*db.Message, error) {
 	return nil, nil
 }
 func (n *IntegrationMockNetwork) SendPushMessages(targetUUID, convID string, messages []*db.Message) error { return nil }
-func (n *IntegrationMockNetwork) SetMerkleSyncHandler(handler sync.MerkleSyncHandler) {}
+func (n *IntegrationMockNetwork) SetMerkleSyncHandler(handler syncpkg.MerkleSyncHandler) {}
 func (n *IntegrationMockNetwork) ResolveUUID(uuid string) (string, error) { return "mock_resolved_pubkey", nil }
 
 type IntegrationMockFile struct{}
@@ -70,13 +70,22 @@ func (f *IntegrationMockFile) GetDirectoryChildren(p string) (interface{}, error
 func (f *IntegrationMockFile) GetSharedRoots() []string { return nil }
 
 type IntegrationMockUI struct {
+	mu        sync.Mutex
 	LastEvent string
 	LastData  interface{}
 }
 
 func (u *IntegrationMockUI) Notify(name string, data interface{}) {
+	u.mu.Lock()
 	u.LastEvent = name
 	u.LastData = data
+	u.mu.Unlock()
+}
+
+func (u *IntegrationMockUI) GetLastEvent() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.LastEvent
 }
 
 func TestSystem_CompleteUserFlow(t *testing.T) {
@@ -139,7 +148,7 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 
-		if mockUI.LastEvent != "ui_new_message" {
+		if mockUI.GetLastEvent() != "ui_new_message" {
 			t.Error("UI notification missing")
 		}
 
@@ -234,7 +243,7 @@ func TestSystem_JoinTeamReusesUUID(t *testing.T) {
 	app2.Startup()
 
 	if err := app2.Login(pwd); err != nil {
-		t.Fatalf("Login after restart failed: %v", err)
+		t.Fatalf("Login failed: %v", err)
 	}
 	teamID2, err := app2.JoinTeamWithName("", secret)
 	if err != nil {
@@ -342,10 +351,14 @@ func TestSystem_NoDuplicateOnSelfSender(t *testing.T) {
 	if err := application.SendTeamChat("First message"); err != nil {
 		t.Fatalf("SendTeamChat failed: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
 
 	tActive, _ := application.GetActiveTeam()
 	histBefore, _ := application.GetConversationMessages(app.DeriveTeamConvID(tActive), 10, 0)
+	// Retry with backoff if message not yet persisted (async write)
+	for retry := 0; len(histBefore) == 0 && retry < 10; retry++ {
+		time.Sleep(10 * time.Millisecond)
+		histBefore, _ = application.GetConversationMessages(app.DeriveTeamConvID(tActive), 10, 0)
+	}
 	countBefore := len(histBefore)
 	t.Logf("Messages before self-publish: %d", countBefore)
 
@@ -365,9 +378,11 @@ func TestSystem_NoDuplicateOnSelfSender(t *testing.T) {
 			TeamID:   tActive,
 		})
 
-		time.Sleep(100 * time.Millisecond)
-
 		histAfter, _ := application.GetConversationMessages(app.DeriveTeamConvID(tActive), 10, 0)
+		for retry := 0; len(histAfter) == 0 && retry < 10; retry++ {
+			time.Sleep(10 * time.Millisecond)
+			histAfter, _ = application.GetConversationMessages(app.DeriveTeamConvID(tActive), 10, 0)
+		}
 		countAfter := len(histAfter)
 		t.Logf("Messages after self-publish: %d", countAfter)
 
