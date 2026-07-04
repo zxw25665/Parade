@@ -190,4 +190,4 @@ No Makefile. Standard Go toolchain only.
 
 - mDNS peer discovery is not functional; peers connect via explicit IP
 - Old Wails frontend in `deprecated/frontend/` — replacement TBD
-- gRPC protobuf stubs in `proto/` are placeholders for future migration
+- gRPC protobuf related code has been removed

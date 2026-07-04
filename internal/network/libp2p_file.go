@@ -20,7 +20,6 @@ import (
 	"parade/internal/core/eventbus"
 	"parade/internal/core/logger"
 	"parade/internal/file"
-	pb "parade/internal/network/pb"
 )
 
 const (
@@ -171,7 +170,7 @@ func (f *libp2pFile) handleFileDownload(stream network.Stream) {
 		chunk, err := f.fileEngine.GetChunk(cleanPath, offset)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				writeMsg(stream, &pb.FileChunk{
+				writeMsg(stream, &FileChunk{
 					TaskId:    req.TaskID,
 					PeerId:    f.localPeer,
 					FilePath:  cleanPath,
@@ -185,7 +184,7 @@ func (f *libp2pFile) handleFileDownload(stream network.Stream) {
 			return
 		}
 
-		resp := &pb.FileChunk{
+		resp := &FileChunk{
 			TaskId:    req.TaskID,
 			PeerId:    f.localPeer,
 			FilePath:  cleanPath,
@@ -212,13 +211,13 @@ func (f *libp2pFile) handleFileBrowse(stream network.Stream) {
 
 	if path == "" {
 		roots := f.fileEngine.GetSharedRoots()
-		entries := make([]*pb.BrowseEntry, 0, len(roots))
+		entries := make([]*BrowseEntry, 0, len(roots))
 		for _, root := range roots {
 			info, err := os.Stat(root)
 			if err != nil {
 				continue
 			}
-			entries = append(entries, &pb.BrowseEntry{
+			entries = append(entries, &BrowseEntry{
 				Name:        filepath.Base(root),
 				Path:        root,
 				IsDirectory: true,
@@ -256,9 +255,9 @@ func (f *libp2pFile) handleFileBrowse(stream network.Stream) {
 		return
 	}
 
-	entries := make([]*pb.BrowseEntry, 0, len(nodes))
+	entries := make([]*BrowseEntry, 0, len(nodes))
 	for _, n := range nodes {
-		entries = append(entries, &pb.BrowseEntry{
+		entries = append(entries, &BrowseEntry{
 			Name:        n.Name,
 			Path:        n.Path,
 			IsDirectory: n.IsFolder,
@@ -401,32 +400,32 @@ func (f *libp2pFile) downloadChunks(ctx context.Context, peerID peer.ID, remoteP
 			return fmt.Errorf("remote download error: %w", err)
 		}
 
-		var chunk pb.FileChunk
+		var chunk FileChunk
 		if err := json.Unmarshal(raw, &chunk); err != nil {
 			return fmt.Errorf("unmarshal chunk: %w", err)
 		}
 
-		if chunk.GetTaskId() != taskID {
-			return fmt.Errorf("task id mismatch: got=%s want=%s", chunk.GetTaskId(), taskID)
+		if chunk.TaskId != taskID {
+			return fmt.Errorf("task id mismatch: got=%s want=%s", chunk.TaskId, taskID)
 		}
-		if chunk.GetEof() {
+		if chunk.Eof {
 			return nil
 		}
-		if len(chunk.GetData()) == 0 {
+		if len(chunk.Data) == 0 {
 			continue
 		}
 
-		saveTotalSize := chunk.GetTotalSize()
+		saveTotalSize := chunk.TotalSize
 		if saveTotalSize == 0 {
 			saveTotalSize = totalSize
 		}
 		if err := f.fileEngine.SaveChunk(
 			ctx,
-			chunk.GetTaskId(),
+			chunk.TaskId,
 			localPath,
-			chunk.GetPeerId(),
-			chunk.GetData(),
-			chunk.GetOffset(),
+			chunk.PeerId,
+			chunk.Data,
+			chunk.Offset,
 			saveTotalSize,
 		); err != nil {
 			return fmt.Errorf("save chunk: %w", err)
@@ -435,7 +434,7 @@ func (f *libp2pFile) downloadChunks(ctx context.Context, peerID peer.ID, remoteP
 }
 
 // BrowseRemote fetches directory listing from a remote peer.
-func (f *libp2pFile) BrowseRemote(peerID peer.ID, path string) ([]*pb.BrowseEntry, error) {
+func (f *libp2pFile) BrowseRemote(peerID peer.ID, path string) ([]*BrowseEntry, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -464,7 +463,7 @@ func (f *libp2pFile) BrowseRemote(peerID peer.ID, path string) ([]*pb.BrowseEntr
 		return nil, fmt.Errorf("remote browse error: %s", errResp.Error)
 	}
 
-	var entries []*pb.BrowseEntry
+	var entries []*BrowseEntry
 	if err := json.Unmarshal(reqBytes, &entries); err != nil {
 		return nil, fmt.Errorf("unmarshal browse entries: %w", err)
 	}
