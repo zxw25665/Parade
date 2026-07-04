@@ -11,8 +11,6 @@ require (
 	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.50.0
-	google.golang.org/grpc v1.80.0
-	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.48.2
 )
 
@@ -124,7 +122,7 @@ require (
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260120221211-b8f7ae30c516 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
