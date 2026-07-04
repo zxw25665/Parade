@@ -870,11 +870,11 @@ func (a *App) GetRemoteDirectoryChildren(targetUUID, path string) ([]map[string]
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, e := range entries {
 		result = append(result, map[string]interface{}{
-			"name":        e.GetName(),
-			"path":        e.GetPath(),
-			"isDirectory": e.GetIsDirectory(),
-			"size":        e.GetSize(),
-			"hash":        e.GetHash(),
+			"name":        e.Name,
+			"path":        e.Path,
+			"isDirectory": e.IsDirectory,
+			"size":        e.Size,
+			"hash":        e.Hash,
 		})
 	}
 	return result, nil

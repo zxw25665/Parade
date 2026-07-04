@@ -19,7 +19,6 @@ import (
 	"parade/internal/core/eventbus"
 	"parade/internal/core/logger"
 	merkleSync "parade/internal/core/sync"
-	pb "parade/internal/network/pb"
 )
 
 const (
@@ -500,7 +499,7 @@ func (e *libp2pEngine) ConnectToPeer(ipAddress string) (*PeerConnectResult, erro
 	return e.connectToPeer(ipAddress)
 }
 
-func (e *libp2pEngine) BrowseRemoteDirectory(targetUUID, path string) ([]*pb.BrowseEntry, error) {
+func (e *libp2pEngine) BrowseRemoteDirectory(targetUUID, path string) ([]*BrowseEntry, error) {
 	if e.file == nil {
 		return nil, fmt.Errorf("file engine not attached")
 	}
