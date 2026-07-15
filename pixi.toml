@@ -2,7 +2,7 @@
 authors = ["Wang Zixin <106529576+zxw25665@users.noreply.github.com>"]
 channels = ["conda-forge"]
 name = "Parade"
-platforms = ["linux-64"]
+platforms = ["linux-64", "win-64", "osx-64", "osx-arm64"]
 version = "0.1.0"
 
 # =============================================================================
