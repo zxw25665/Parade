@@ -181,10 +181,10 @@ func (e *libp2pEngine) startIdentifyServer(port int) {
 }
 
 func (e *libp2pEngine) Start(port int) error {
-	return e.StartWithMDNS(port, true)
+	return e.StartWithMDNS(port, "0.0.0.0", true)
 }
 
-func (e *libp2pEngine) StartWithMDNS(port int, mdnsEnabled bool) error {
+func (e *libp2pEngine) StartWithMDNS(port int, listenAddr string, mdnsEnabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -197,7 +197,7 @@ func (e *libp2pEngine) StartWithMDNS(port int, mdnsEnabled bool) error {
 		return fmt.Errorf("identity not loaded")
 	}
 
-	host, err := NewLibp2pHost(priv, port, e.bus, e.crypto, e.logr)
+	host, err := NewLibp2pHost(priv, port, listenAddr, e.bus, e.crypto, e.logr)
 	if err != nil {
 		return fmt.Errorf("Start: %w", err)
 	}

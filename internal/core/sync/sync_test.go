@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"parade/internal/core/db"
 )
@@ -97,6 +98,18 @@ func (m *memDB) GetMerkleNodesByParent(ctx context.Context, convID, parentPath s
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].BucketPath < result[j].BucketPath })
 	return result, nil
+}
+
+func (m *memDB) DeleteMerkleNodesByParent(ctx context.Context, convID, parentPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, n := range m.merkle {
+		if n.ConvID == convID && len(n.BucketPath) >= len(parentPath) &&
+			n.BucketPath[:len(parentPath)] == parentPath {
+			delete(m.merkle, k)
+		}
+	}
+	return nil
 }
 
 func (m *memDB) DeleteMerkleNodesByConv(ctx context.Context, convID string) error {
@@ -326,7 +339,7 @@ func newTestNode(uuid, name string, net *testNetwork) *testNode {
 		db:   mdb,
 		net:  net,
 	}
-	node.orch = NewSyncOrchestrator(mdb, net, nil)
+	node.orch = NewSyncOrchestrator(mdb, net, nil, nil)
 	net.register(node)
 	return node
 }
@@ -1021,5 +1034,169 @@ func TestConcurrentSync_Safety(t *testing.T) {
 
 	if !cluster.VerifyAllConverged() {
 		t.Fatal("concurrent sync did not converge")
+	}
+}
+
+// ============================================================================
+// PUSH MESSAGES / DELETE SUBTREE / PRUNE TESTS
+// ============================================================================
+
+// TestPushMessages_PersistsToDB verifies that HandlePushMessages stores
+// messages in the receiver's DB and handles empty slices gracefully.
+func TestPushMessages_PersistsToDB(t *testing.T) {
+	ctx := context.Background()
+	mdb := newMemDB()
+
+	mdb.UpsertConversation(ctx, &db.Conversation{ID: "conv-a", TeamID: "test", Type: "team"})
+
+	orch := NewSyncOrchestrator(mdb, nil, nil, nil)
+
+	// Create 10 messages with sequential HLCs.
+	msgs := make([]*db.Message, 10)
+	for i := 0; i < 10; i++ {
+		hour := 8 + i
+		msgs[i] = &db.Message{
+			ID:             fmt.Sprintf("push-msg-%02d", i),
+			HLC:            fmt.Sprintf("2024-01-15T%02d:00:00.000Z_0001_node-00", hour),
+			Content:        []byte(fmt.Sprintf("hello %d", i)),
+			ConversationID: "conv-a",
+			TeamID:         "test",
+			SenderID:       "node-00",
+		}
+	}
+
+	err := orch.HandlePushMessages(ctx, "conv-a", msgs)
+	if err != nil {
+		t.Fatalf("HandlePushMessages failed: %v", err)
+	}
+
+	count := mdb.MessageCount("conv-a")
+	if count != len(msgs) {
+		t.Errorf("expected %d messages, got %d", len(msgs), count)
+	}
+
+	// Verify messages are retrievable.
+	all := mdb.AllMessages("conv-a")
+	if len(all) != len(msgs) {
+		t.Errorf("AllMessages returned %d, want %d", len(all), len(msgs))
+	}
+
+	// Idempotent: pushing the same messages again should not duplicate.
+	err = orch.HandlePushMessages(ctx, "conv-a", msgs)
+	if err != nil {
+		t.Fatalf("second HandlePushMessages failed: %v", err)
+	}
+	if cnt := mdb.MessageCount("conv-a"); cnt != len(msgs) {
+		t.Errorf("idempotent push: expected %d messages, got %d", len(msgs), cnt)
+	}
+
+	// Empty slice should return nil without error.
+	err = orch.HandlePushMessages(ctx, "conv-a", []*db.Message{})
+	if err != nil {
+		t.Errorf("HandlePushMessages with empty slice should not error: %v", err)
+	}
+
+	// Nil slice should also return nil without error.
+	err = orch.HandlePushMessages(ctx, "conv-a", nil)
+	if err != nil {
+		t.Errorf("HandlePushMessages with nil slice should not error: %v", err)
+	}
+}
+
+// TestDeleteSubtree_PrunesNodes verifies that deleteSubtree removes
+// a subtree of Merkle nodes but leaves ancestor nodes intact.
+func TestDeleteSubtree_PrunesNodes(t *testing.T) {
+	ctx := context.Background()
+	mdb := newMemDB()
+	fm := NewFreezeManager(mdb)
+
+	// Insert Merkle nodes for conversation "conv-a".
+	nodes := []*db.MerkleNode{
+		{ConvID: "conv-a", BucketPath: "2024", Level: LevelYear, Hash: []byte("year-hash")},
+		{ConvID: "conv-a", BucketPath: "2024-01", Level: LevelMonth, Hash: []byte("month-hash")},
+		{ConvID: "conv-a", BucketPath: "2024-01-15", Level: LevelDay, Hash: []byte("day-hash")},
+		{ConvID: "conv-a", BucketPath: "2024-01-15T08", Level: LevelHour, Hash: []byte("hour-08-hash")},
+		{ConvID: "conv-a", BucketPath: "2024-01-15T09", Level: LevelHour, Hash: []byte("hour-09-hash")},
+	}
+	for _, n := range nodes {
+		if err := mdb.UpsertMerkleNode(ctx, n); err != nil {
+			t.Fatalf("upsert node %s failed: %v", n.BucketPath, err)
+		}
+	}
+
+	if err := fm.deleteSubtree(ctx, "conv-a", "2024-01", LevelDay); err != nil {
+		t.Fatalf("deleteSubtree failed: %v", err)
+	}
+
+	// Verify deleted nodes are gone.
+	deletedPaths := []string{"2024-01", "2024-01-15", "2024-01-15T08", "2024-01-15T09"}
+	for _, path := range deletedPaths {
+		node, err := mdb.GetMerkleNode(ctx, "conv-a", path)
+		if err != nil {
+			t.Errorf("GetMerkleNode(%s) error: %v", path, err)
+		}
+		if node != nil {
+			t.Errorf("expected %s to be deleted, but it still exists", path)
+		}
+	}
+
+	// Verify the year ancestor still exists.
+	yearNode, err := mdb.GetMerkleNode(ctx, "conv-a", "2024")
+	if err != nil {
+		t.Fatalf("GetMerkleNode(2024) error: %v", err)
+	}
+	if yearNode == nil {
+		t.Error("expected year bucket '2024' to still exist after subtree deletion")
+	}
+
+	// Verify non-existent node returns nil without error.
+	noNode, err := mdb.GetMerkleNode(ctx, "conv-a", "9999-99-99")
+	if err != nil {
+		t.Errorf("GetMerkleNode(non-existent) error: %v", err)
+	}
+	if noNode != nil {
+		t.Error("expected nil for non-existent Merkle node")
+	}
+}
+
+// TestPruneOldBuckets_Called is a smoke test verifying that PruneOldBuckets
+// runs without panicking and returns nil.
+func TestPruneOldBuckets_Called(t *testing.T) {
+	ctx := context.Background()
+	mdb := newMemDB()
+
+	// Set up a conversation and some Merkle nodes.
+	mdb.UpsertConversation(ctx, &db.Conversation{ID: "conv-a", TeamID: "test", Type: "team"})
+	mdb.UpsertMerkleNode(ctx, &db.MerkleNode{
+		ConvID:     "conv-a",
+		BucketPath: "2024-01-15",
+		Level:      LevelDay,
+		Hash:       []byte("day-hash"),
+		Frozen:     true,
+	})
+	mdb.UpsertMerkleNode(ctx, &db.MerkleNode{
+		ConvID:     "conv-a",
+		BucketPath: "2024-01-16",
+		Level:      LevelDay,
+		Hash:       []byte("day-hash-2"),
+		Frozen:     true,
+	})
+
+	fm := NewFreezeManager(mdb)
+
+	err := fm.PruneOldBuckets(1 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneOldBuckets failed: %v", err)
+	}
+
+	// Both old frozen day buckets should be pruned.
+	for _, path := range []string{"2024-01-15", "2024-01-16"} {
+		node, err := mdb.GetMerkleNode(ctx, "conv-a", path)
+		if err != nil {
+			t.Errorf("GetMerkleNode(%s) after prune: %v", path, err)
+		}
+		if node != nil {
+			t.Errorf("expected %s to be pruned, but it still exists", path)
+		}
 	}
 }

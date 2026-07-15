@@ -1,11 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { usePeersStore } from '@/stores/peers'
-import { useFilesStore } from '@/stores/files'
 import { useAuthStore } from '@/stores/auth'
-import { listen } from '@tauri-apps/api/event'
-import type { UnlistenFn } from '@tauri-apps/api/event'
 import ConversationList from './ConversationList.vue'
 import ChatPanel from './ChatPanel.vue'
 import PeerList from './PeerList.vue'
@@ -14,7 +11,6 @@ import DownloadList from './DownloadList.vue'
 
 const chatStore = useChatStore()
 const peersStore = usePeersStore()
-const filesStore = useFilesStore()
 const authStore = useAuthStore()
 
 // UI State
@@ -29,83 +25,26 @@ const rightPanelWidth = ref(320)
 const isResizingLeft = ref(false)
 const isResizingRight = ref(false)
 
-let unlistenNewMessage: UnlistenFn | null = null
-let unlistenConversationUpdated: UnlistenFn | null = null
-let unlistenPeerJoined: UnlistenFn | null = null
-let unlistenPeerLeft: UnlistenFn | null = null
-let unlistenFileProgress: UnlistenFn | null = null
-let unlistenFileCompleted: UnlistenFn | null = null
+const resizeHandler = () => {
+  isMobile.value = window.innerWidth < 768
+  if (isMobile.value) {
+    leftSidebarCollapsed.value = true
+    rightPanelCollapsed.value = true
+  }
+}
 
 onMounted(async () => {
-  // Check for mobile viewport
-  const checkMobile = () => {
-    isMobile.value = window.innerWidth < 768
-    if (isMobile.value) {
-      leftSidebarCollapsed.value = true
-      rightPanelCollapsed.value = true
-    }
-  }
-  checkMobile()
-  window.addEventListener('resize', checkMobile)
+  resizeHandler()
+  window.addEventListener('resize', resizeHandler)
 
   // Load initial data
   if (authStore.isAuthenticated) {
     await loadData()
   }
-
-  // Setup event listeners
-  unlistenNewMessage = await listen('ui_new_message', (event) => {
-    const msg = event.payload as any
-    chatStore.handleNewMessage({
-      id: msg.id,
-      hlc: msg.hlc,
-      sender: msg.sender,
-      content: msg.content,
-      conversation_id: msg.conversation_id,
-      timestamp: msg.timestamp,
-    })
-  })
-
-  unlistenConversationUpdated = await listen('ui_conversation_updated', () => {
-    chatStore.handleConversationUpdated()
-  })
-
-  unlistenPeerJoined = await listen('ui_peer_joined', (event) => {
-    const payload = event.payload as { peer_uuid: string; ip_address: string }
-    peersStore.handlePeerJoined(payload)
-  })
-
-  unlistenPeerLeft = await listen('ui_peer_left', (event) => {
-    const payload = event.payload as { peer_uuid: string; ip_address: string }
-    peersStore.handlePeerLeft(payload)
-  })
-
-  // File events
-  unlistenFileProgress = await listen('ui_file_progress', (event) => {
-    const payload = event.payload as {
-      task_id: string
-      file_path: string
-      transferred: number
-      total_size: number
-      is_upload: boolean
-    }
-    filesStore.handleFileProgress(payload)
-  })
-
-  unlistenFileCompleted = await listen('ui_file_completed', (event) => {
-    const taskId = event.payload as string
-    filesStore.handleFileCompleted(taskId)
-  })
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', () => {})
-  unlistenNewMessage?.()
-  unlistenConversationUpdated?.()
-  unlistenPeerJoined?.()
-  unlistenPeerLeft?.()
-  unlistenFileProgress?.()
-  unlistenFileCompleted?.()
+  window.removeEventListener('resize', resizeHandler)
 })
 
 // Watch for auth changes

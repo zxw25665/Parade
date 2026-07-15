@@ -19,6 +19,14 @@ Requires Go 1.26+. No CGO, no external dependencies.
 - **Offline-First** — Full local operation; syncs automatically when peers reconnect
 - **No Server** — Pure P2P over LAN; no registration, no cloud, no infrastructure
 
+### Frontend
+
+- **Tauri/Vue3 Desktop App** — in `frontend/`
+- Full auth flow: Register identity → Login → Create/Join team
+- Three-panel chat UI: conversation list + message panel + file/download panel
+- Real-time event push via persistent UDS connection: new messages, file progress, peer status
+- Rust IPC bridge auto-spawns the Go daemon and forwards requests/events over UDS
+
 ## Architecture
 
 ```
@@ -29,7 +37,7 @@ cmd/parade/           CLI entrypoint (daemon, version)
     └── lockfile.go       Single-instance flock
 
 internal/
-├── app/               Business orchestration, JSON-RPC API (32 methods)
+├── app/               Business orchestration, JSON-RPC API (36 methods)
 │   ├── app.go             Register, Login, JoinTeam, SendTeamChat, etc.
 │   ├── interfaces.go      NetworkEngine, FileEngine, Frontend contracts
 │   ├── hlc.go             Hybrid Logical Clock generator
@@ -119,6 +127,7 @@ Protocol: `/parade/merklesync/1.0.0` (6 message types, 30s timeout)
 
 ```bash
 ./tests/test_all.sh          # 30 tests across 6 phases
+./tests/test_backend_fixes.sh # Backend fixes verification (21 checks)
 ```
 
 | Phase | What | Count |
@@ -191,5 +200,12 @@ No Makefile. Standard Go toolchain only.
 
 ## Known Issues
 
-- mDNS peer discovery fixed (`_parade._tcp` service), but LAN-only
-- gRPC protobuf related code has been removed
+- mDNS peer discovery may require manual ConnectToPeer in some network environments
+
+## Frontend Development
+
+```bash
+cd frontend && npm run dev             # Start frontend dev server
+cd frontend && npm run build           # Production build
+cd frontend/src-tauri && cargo check   # Check Rust code
+```

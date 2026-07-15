@@ -105,11 +105,6 @@ func (m *MDNSService) HandlePeerFound(info peer.AddrInfo) {
 
 	m.log(logger.Info, fmt.Sprintf("mDNS discovered peer: %s", info.ID.ShortString()))
 
-	m.bus.Publish(eventbus.TopicPeerOnline, eventbus.PeerEventPayload{
-		PeerUUID:  "",
-		IPAddress: extractIPFromAddrInfo(info),
-	})
-
 	if onPeerFound != nil {
 		go onPeerFound(info)
 	}

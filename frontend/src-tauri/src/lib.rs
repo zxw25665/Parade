@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use tauri::{RunEvent};
+use tauri::{Emitter, RunEvent};
 use tracing::{error, info};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -14,6 +15,11 @@ static DAEMON_HANDLE: Lazy<Arc<Mutex<Option<std::process::Child>>>> =
 
 static UDS_CLIENT: Lazy<Arc<Mutex<Option<UDSConnection>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
+
+static APP_HANDLE: Lazy<Arc<Mutex<Option<tauri::AppHandle>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(None)));
+
+static EVENT_READER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -45,6 +51,15 @@ pub struct RpcError {
 pub struct EventPayload {
     pub event: String,
     pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonRpcEvent {
+    #[allow(dead_code)]
+    jsonrpc: String,
+    #[allow(dead_code)]
+    method: String,
+    params: EventPayload,
 }
 
 #[cfg(unix)]
@@ -306,6 +321,76 @@ fn shutdown_daemon() {
     }
 }
 
+#[cfg(unix)]
+fn start_event_reader(uds_path: PathBuf, app_handle: tauri::AppHandle) {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixStream;
+
+    std::thread::spawn(move || {
+        let mut backoff_ms: u64 = 500;
+        let max_backoff_ms: u64 = 30000;
+
+        while !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
+            match UnixStream::connect(&uds_path) {
+                Ok(stream) => {
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .ok();
+                    let reader = BufReader::new(stream);
+                    backoff_ms = 500;
+
+                    for line in reader.lines() {
+                        if EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        match line {
+                            Ok(line) => {
+                                let line = line.trim();
+                                if line.is_empty() {
+                                    continue;
+                                }
+                                if let Ok(event) = serde_json::from_str::<JsonRpcEvent>(line) {
+                                    let _ = app_handle.emit(
+                                        &event.params.event,
+                                        event.params.data.unwrap_or(serde_json::Value::Null),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!("Event reader read error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Event reader connect error: {}", e);
+                }
+            }
+
+            if !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                backoff_ms = std::cmp::min(backoff_ms * 2, max_backoff_ms);
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn on_foreground() -> Result<(), String> {
+    let conn = UDS_CLIENT.lock().map_err(|e| e.to_string())?;
+    let client = conn.as_ref().ok_or("Daemon not connected")?;
+    client
+        .call("OnForeground", None)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn write_log_file(file_path: String, content: String) -> Result<(), String> {
+    std::fs::write(&file_path, &content).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn call_daemon(method: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let conn = UDS_CLIENT.lock().map_err(|e| e.to_string())?;
@@ -546,11 +631,20 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|_app| {
+        .setup(|app| {
             info!("Setting up Tauri app...");
 
             if let Err(e) = spawn_daemon() {
                 error!("Failed to spawn daemon: {}", e);
+            } else {
+                let handle = app.handle().clone();
+                *APP_HANDLE.lock().unwrap() = Some(handle.clone());
+
+                #[cfg(unix)]
+                {
+                    let uds_path = get_uds_path();
+                    start_event_reader(uds_path, handle);
+                }
             }
 
             Ok(())
@@ -597,12 +691,15 @@ pub fn run() {
             get_share_group_dirs,
             get_pub_key,
             export_logs,
+            on_foreground,
+            write_log_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::ExitRequested { api, code, .. } = event {
                 if code == Some(0) {
+                    EVENT_READER_SHUTDOWN.store(true, Ordering::SeqCst);
                     shutdown_daemon();
                     app_handle.exit(0);
                 }

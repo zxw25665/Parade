@@ -64,6 +64,7 @@ type Database interface {
 	GetMerkleNode(ctx context.Context, convID, bucketPath string) (*MerkleNode, error)
 	GetMerkleNodesByLevel(ctx context.Context, convID string, level int) ([]*MerkleNode, error)
 	GetMerkleNodesByParent(ctx context.Context, convID, parentPath string) ([]*MerkleNode, error)
+	DeleteMerkleNodesByParent(ctx context.Context, convID, parentPath string) error
 	DeleteMerkleNodesByConv(ctx context.Context, convID string) error
 
 	GetFrozenState(ctx context.Context, convID string) (*FreezeState, error)

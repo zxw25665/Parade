@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"parade/internal/core/db"
+	"parade/internal/core/eventbus"
 	"parade/internal/core/logger"
 )
 
@@ -35,6 +36,7 @@ type MerkleSyncHandler interface {
 	HandleMerkleRootRequest(ctx context.Context, convID string) ([]byte, error)
 	HandleBucketCompare(ctx context.Context, convID string, level int, paths []string) ([]BucketInfo, error)
 	HandleFetchMessages(ctx context.Context, convID, bucketPath, sinceHLC string) ([]*db.Message, error)
+	HandlePushMessages(ctx context.Context, convID string, messages []*db.Message) error
 }
 
 // SyncOrchestrator coordinates the level-by-level Merkle tree sync between peers.
@@ -42,14 +44,16 @@ type SyncOrchestrator struct {
 	db     MerkleDB
 	net    MerkleNetwork
 	logr   logger.Logger
+	bus    eventbus.EventBus
 }
 
 // NewSyncOrchestrator creates a new SyncOrchestrator.
-func NewSyncOrchestrator(db MerkleDB, net MerkleNetwork, logr logger.Logger) *SyncOrchestrator {
+func NewSyncOrchestrator(db MerkleDB, net MerkleNetwork, logr logger.Logger, bus eventbus.EventBus) *SyncOrchestrator {
 	return &SyncOrchestrator{
 		db:   db,
 		net:  net,
 		logr: logr,
+		bus:  bus,
 	}
 }
 
@@ -122,6 +126,14 @@ func (s *SyncOrchestrator) SyncConversation(ctx context.Context, peerUUID, convI
 		s.log(logger.Info, "sync", fmt.Sprintf("merkle sync conv=%s: synced %d messages from %s", trunc8(convID), totalSynced, trunc16(peerUUID)))
 	} else {
 		s.log(logger.Debug, "sync", fmt.Sprintf("merkle sync conv=%s: no new messages from %s", trunc8(convID), trunc16(peerUUID)))
+	}
+
+	if s.bus != nil {
+		s.bus.Publish(eventbus.TopicMerkleSyncComplete, eventbus.MerkleSyncCompletePayload{
+			PeerUUID:       peerUUID,
+			ConversationID: convID,
+			MessagesSynced: totalSynced,
+		})
 	}
 
 	return nil
@@ -449,4 +461,32 @@ func (s *SyncOrchestrator) HandleFetchMessages(ctx context.Context, convID, buck
 	}
 
 	return messages, nil
+}
+
+// HandlePushMessages handles an incoming push of messages from a peer.
+func (s *SyncOrchestrator) HandlePushMessages(ctx context.Context, convID string, messages []*db.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	// Batch insert in transaction
+	if err := s.db.RunInTx(ctx, func(tx db.DBTx) error {
+		for _, msg := range messages {
+			if err := tx.InsertMessageTx(ctx, msg); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("insert pushed messages: %w", err)
+	}
+
+	// Update conversation last HLC
+	lastHLC := messages[len(messages)-1].HLC
+	if err := s.db.UpdateConversationLastHLC(ctx, convID, lastHLC); err != nil {
+		s.log(logger.Warning, "sync", fmt.Sprintf("conv=%s: update last HLC after push: %v", trunc8(convID), err))
+	}
+
+	s.log(logger.Debug, "sync", fmt.Sprintf("conv=%s: received %d pushed messages", trunc8(convID), len(messages)))
+	return nil
 }

@@ -21,6 +21,14 @@ go build -o parade ./cmd/parade/
 - **离线优先** — 完全本地运行，节点重连时自动同步
 - **无服务器** — 纯 P2P 局域网，无需注册、云端或任何基础设施
 
+### 前端
+
+- **Tauri/Vue3 桌面应用** — 位于 `frontend/`
+- 完整的认证流程：注册身份 → 登录 → 创建/加入团队
+- 三栏式聊天界面：会话列表 + 消息面板 + 文件/下载面板
+- 实时事件推送：通过持久 UDS 连接接收新消息、文件进度、Peer 状态
+- Rust IPC 桥接层自动拉起 Go daemon，并通过 UDS 转发请求和事件
+
 ## 架构
 
 ```
@@ -31,7 +39,7 @@ cmd/parade/           CLI 入口（daemon、version）
     └── lockfile.go       单实例锁（flock）
 
 internal/
-├── app/               业务编排层，JSON-RPC API（32 个方法）
+├── app/               业务编排层，JSON-RPC API（36 个方法）
 │   ├── app.go             Register、Login、JoinTeam、SendTeamChat 等
 │   ├── interfaces.go      NetworkEngine、FileEngine、Frontend 接口定义
 │   ├── hlc.go             混合逻辑时钟生成器
@@ -121,6 +129,7 @@ Parade 使用**稀疏时间桶默克尔树**进行会话同步：
 
 ```bash
 ./tests/test_all.sh          # 30 项测试，6 个阶段
+./tests/test_backend_fixes.sh # 后端修复验证（21 项检查）
 ```
 
 | 阶段 | 内容 | 数量 |
@@ -193,5 +202,12 @@ go test -bench=. ./internal/core/sync/...     # 基准测试
 
 ## 已知问题
 
-- mDNS 节点发现已修复（`_parade._tcp` 服务），但仅在局域网内有效
-- gRPC protobuf 相关代码已移除
+- mDNS 节点发现在部分网络环境下需要手动 ConnectToPeer
+
+## 前端开发
+
+```bash
+cd frontend && npm run dev             # 启动前端开发服务器
+cd frontend && npm run build           # 构建生产版本
+cd frontend/src-tauri && cargo check   # 检查 Rust 代码
+```

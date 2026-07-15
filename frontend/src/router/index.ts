@@ -24,25 +24,31 @@ const routes = [
     path: '/team',
     name: 'team',
     component: () => import('@/views/TeamView.vue'),
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, layout: 'main' },
+  },
+  {
+    path: '/team-join',
+    name: 'team-join',
+    component: () => import('@/views/TeamJoinView.vue'),
+    meta: { requiresAuth: true, layout: 'main' },
   },
   {
     path: '/chat',
     name: 'chat',
     component: () => import('@/views/ChatView.vue'),
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, layout: 'main' },
   },
   {
     path: '/files',
     name: 'files',
     component: () => import('@/views/FilesView.vue'),
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, layout: 'main' },
   },
   {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, layout: 'main' },
   },
 ]
 
@@ -51,6 +57,7 @@ declare module 'vue-router' {
     requiresAuth?: boolean
     requiresNoAuth?: boolean
     requiresIdentity?: boolean
+    layout?: string
   }
 }
 

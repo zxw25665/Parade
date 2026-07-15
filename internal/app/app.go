@@ -63,6 +63,8 @@ type App struct {
 	dataDir      string
 	savedPeers   []string
 	mdnsEnabled  bool
+	networkPort  int
+	listenAddr   string
 
 	syncOrch  *merkleSync.SyncOrchestrator
 	freezeMgr *merkleSync.FreezeManager
@@ -91,6 +93,16 @@ func (a *App) WithIdentityPath(path string) *App {
 
 func (a *App) WithMDNSEnabled(enabled bool) *App {
 	a.mdnsEnabled = enabled
+	return a
+}
+
+func (a *App) WithNetworkPort(port int) *App {
+	a.networkPort = port
+	return a
+}
+
+func (a *App) WithNetworkListenAddr(addr string) *App {
+	a.listenAddr = addr
 	return a
 }
 
@@ -131,17 +143,25 @@ func (a *App) startNetwork() error {
 	if a.netEng == nil {
 		return nil
 	}
+	port := a.networkPort
+	if port == 0 {
+		port = 4327
+	}
+	listenAddr := a.listenAddr
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0"
+	}
 	type mdnsStarter interface {
-		StartWithMDNS(port int, mdnsEnabled bool) error
+		StartWithMDNS(port int, listenAddr string, mdnsEnabled bool) error
 	}
 	if ms, ok := a.netEng.(mdnsStarter); ok {
-		return ms.StartWithMDNS(4327, a.mdnsEnabled)
+		return ms.StartWithMDNS(port, listenAddr, a.mdnsEnabled)
 	}
 	type simpleStarter interface {
 		Start(port int) error
 	}
 	if ss, ok := a.netEng.(simpleStarter); ok {
-		return ss.Start(4327)
+		return ss.Start(port)
 	}
 	return nil
 }
@@ -153,7 +173,7 @@ func (a *App) initMerkleSync() {
 	a.freezeMgr = merkleSync.NewFreezeManager(a.database)
 	a.freezeMgr.Start()
 
-	a.syncOrch = merkleSync.NewSyncOrchestrator(a.database, a.netEng, a.logr)
+	a.syncOrch = merkleSync.NewSyncOrchestrator(a.database, a.netEng, a.logr, a.evBus)
 
 	if ms, ok := a.netEng.(interface{ SetMerkleSyncHandler(merkleSync.MerkleSyncHandler) }); ok {
 		ms.SetMerkleSyncHandler(a.syncOrch)
@@ -407,6 +427,13 @@ func (a *App) registerEventSubscribers() {
 		msgData, _ := json.Marshal(msgs)
 		if a.netEng != nil {
 			_ = a.netEng.SendConvSyncResponse(payload.RequesterUUID, payload.ConversationID, msgData)
+		}
+	})
+
+	a.subscribe(eventbus.TopicMerkleSyncComplete, func(c context.Context, ev eventbus.Event) {
+		if payload, ok := ev.Payload.(eventbus.MerkleSyncCompletePayload); ok {
+			a.log(logger.Info, "sync", fmt.Sprintf("merkle sync complete: conv=%s peer=%s msgs=%d", truncate(payload.ConversationID, 8), truncate(payload.PeerUUID, 16), payload.MessagesSynced))
+			a.ui.Notify("ui_conversation_updated", nil)
 		}
 	})
 }

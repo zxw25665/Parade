@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { useRoute } from 'vue-router'
+import MainLayout from '@/layouts/MainLayout.vue'
+
+const route = useRoute()
 </script>
 
 <template>
-  <RouterView />
+  <MainLayout v-if="route.meta.layout === 'main'">
+    <RouterView />
+  </MainLayout>
+  <RouterView v-else />
 </template>
 
 <style>
