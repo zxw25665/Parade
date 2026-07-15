@@ -49,6 +49,8 @@ Daemon Flags:
   --headless               Run without UDS listener (for automation/testing)
   --debug                  Debug mode: allow multi-instance, custom listen interface
   --production             Production mode: enforce loopback-only, single-instance lock
+  --mdns                   Enable mDNS peer discovery (default: enabled)
+  --no-mdns                Disable mDNS peer discovery
 
 Mode Precedence:
   --production  >  --debug  >  (normal)
@@ -59,6 +61,7 @@ Examples:
   parade daemon --headless                   # Headless, no UDS, for automated tests
   parade daemon --debug --listen 0.0.0.0     # Debug: listen on all interfaces
   parade daemon --production                 # Production: enforced security
+  parade daemon --no-mdns                     # Disable mDNS discovery
   parade daemon --data-dir /tmp/parade-1 --port 4328 --debug   # Multi-instance debug
 `)
 }

@@ -40,6 +40,9 @@ func RegisterMethods(a *App) {
 		register("GetPeers", a.GetPeers)
 		register("GetPeersWithStatus", a.GetPeersWithStatus)
 		register("ConnectToPeer", a.ConnectToPeer)
+		register("ListSavedPeers", a.ListSavedPeers)
+		register("SavePeer", a.SavePeer)
+		register("RemovePeer", a.RemovePeer)
 		register("OnForeground", a.OnForeground)
 
 		register("ShareDirectory", a.ShareDirectory)

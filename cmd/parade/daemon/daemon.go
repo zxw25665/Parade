@@ -18,7 +18,6 @@ import (
 	"parade/internal/network"
 )
 
-// Config holds the parsed daemon configuration.
 type Config struct {
 	UDS        string
 	DataDir    string
@@ -27,11 +26,11 @@ type Config struct {
 	Headless   bool
 	Debug      bool
 	Production bool
+	MDNSEnabled bool
 }
 
 func Run(args []string) {
-	cfg := parseFlags(args)
-	validateConfig(cfg)
+	cfg := loadConfig(args)
 
 	// Resolve data directory
 	dataDir := cfg.DataDir
@@ -85,33 +84,39 @@ func Run(args []string) {
 	netEngine.AttachFileEngine(fileEngine)
 	defer netEngine.Stop()
 
-	// Create UDS frontend (or nil for headless mode)
 	var ui app.Frontend
-	var udsSrv *app.UDSServer
+	var ipcSrv app.IPCServer
+
 	if !cfg.Headless {
-		udsSrv = app.NewUDSServer(cfg.UDS)
-		ui = app.NewUDSFrontend(udsSrv.Hub())
+		udsPath := cfg.UDS
+		if udsPath == "" {
+			udsPath = app.GetDefaultPipePath()
+		}
+		ipcSrv = app.NewIPCServer(udsPath)
+		log.Printf("[daemon] using IPC: %s", udsPath)
+		ui = app.NewUDSFrontend(ipcSrv.Hub())
 	} else {
-		log.Println("[daemon] headless mode — no UDS listener")
+		log.Println("[daemon] headless mode — no IPC listener")
 		ui = &app.NullUI{}
 	}
 
 	identityPath := filepath.Join(dataDir, ".parade_identity")
 	appInstance := app.NewApp(eventBus, cry, database, netEngine, fileEngine, ui, logBroker).
-		WithIdentityPath(identityPath)
+		WithIdentityPath(identityPath).
+		WithMDNSEnabled(cfg.MDNSEnabled)
+	_ = appInstance.LoadPeersConfig(dataDir)
 	appInstance.Startup()
 
-	// Start UDS listener (after app is initialized)
-	if udsSrv != nil {
+	if ipcSrv != nil {
 		app.RegisterMethods(appInstance)
-		if err := udsSrv.Start(); err != nil {
-			log.Fatalf("failed to start UDS listener: %v", err)
+		if err := ipcSrv.Start(); err != nil {
+			log.Fatalf("failed to start IPC listener: %v", err)
 		}
-		defer udsSrv.Stop()
+		defer ipcSrv.Stop()
 	}
 
-	log.Printf("[daemon] Parade %s started (pid=%d, data=%s, p2p=%s:%d, uds=%s, headless=%v, debug=%v, production=%v)",
-		appVersion, os.Getpid(), dataDir, cfg.ListenAddr, cfg.Port, cfg.UDS, cfg.Headless, cfg.Debug, cfg.Production)
+	log.Printf("[daemon] Parade %s started (pid=%d, data=%s, p2p=%s:%d, uds=%s, headless=%v, debug=%v, production=%v, mdns=%v)",
+		appVersion, os.Getpid(), dataDir, cfg.ListenAddr, cfg.Port, cfg.UDS, cfg.Headless, cfg.Debug, cfg.Production, cfg.MDNSEnabled)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
@@ -123,22 +128,77 @@ func Run(args []string) {
 	log.Println("[daemon] Parade stopped")
 }
 
-func parseFlags(args []string) Config {
-	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-
-	var cfg Config
-	fs.StringVar(&cfg.UDS, "uds", "/tmp/parade.sock", "Unix domain socket path")
-	fs.StringVar(&cfg.DataDir, "data-dir", "", "Data directory (default: current directory)")
-	fs.IntVar(&cfg.Port, "port", 4327, "P2P listen port")
-	fs.StringVar(&cfg.ListenAddr, "listen", "127.0.0.1", "P2P listen address")
-	fs.BoolVar(&cfg.Headless, "headless", false, "Run without UDS listener")
-	fs.BoolVar(&cfg.Debug, "debug", false, "Debug mode: allow multi-instance, custom listen interface")
-	fs.BoolVar(&cfg.Production, "production", false, "Production mode: enforce security constraints")
-
-	if err := fs.Parse(args); err != nil {
+func loadConfig(args []string) Config {
+	cliCfg, err := parseFlagsWithTracking(args)
+	if err != nil {
 		os.Exit(1)
 	}
-	return cfg
+
+	cfgFile, err := app.LoadFromStandardLocations("")
+	if err != nil {
+		log.Fatalf("failed to load config file: %v", err)
+	}
+
+	cfg := app.FromConfigFile(cfgFile)
+	app.ApplyEnvOverrides(&cfg)
+	cfg = app.MergeWithCLI(cfg, cliCfg)
+
+	finalCfg := Config{
+		UDS:         cfg.UDS,
+		DataDir:     cfg.DataDir,
+		Port:        cfg.Port,
+		ListenAddr:  cfg.ListenAddr,
+		Headless:    cfg.Headless,
+		Debug:       cfg.Debug,
+		Production:  cfg.Production,
+		MDNSEnabled: cfg.MDNSEnabled,
+	}
+
+	validateConfig(finalCfg)
+	return finalCfg
+}
+
+func parseFlagsWithTracking(args []string) (*app.DaemonCLIConfig, error) {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+
+	cliCfg := &app.DaemonCLIConfig{}
+
+	fs.StringVar(&cliCfg.UDS, "uds", "", "Unix domain socket path")
+	fs.StringVar(&cliCfg.DataDir, "data-dir", "", "Data directory (default: current directory)")
+	fs.IntVar(&cliCfg.Port, "port", 0, "P2P listen port")
+	fs.StringVar(&cliCfg.ListenAddr, "listen", "", "P2P listen address")
+	fs.BoolVar(&cliCfg.Headless, "headless", false, "Run without UDS listener")
+	fs.BoolVar(&cliCfg.Debug, "debug", false, "Debug mode: allow multi-instance, custom listen interface")
+	fs.BoolVar(&cliCfg.Production, "production", false, "Production mode: enforce security constraints")
+	fs.BoolVar(&cliCfg.MDNSEnabled, "mdns", false, "Enable mDNS peer discovery (default: enabled)")
+	fs.BoolVar(&cliCfg.MDNSEnabled, "no-mdns", false, "Disable mDNS peer discovery")
+
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+
+	cliCfg.HeadlessSet = wasFlagSet(args, "headless")
+	cliCfg.DebugSet = wasFlagSet(args, "debug")
+	cliCfg.ProductionSet = wasFlagSet(args, "production")
+	cliCfg.MDNSEnabledSet = wasFlagSet(args, "mdns") || wasFlagSet(args, "no-mdns")
+
+	if wasFlagSet(args, "no-mdns") {
+		cliCfg.MDNSEnabled = false
+	}
+
+	return cliCfg, nil
+}
+
+func wasFlagSet(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--"+name || arg == "-"+string(name[0]) {
+			return true
+		}
+		if len(arg) > 2 && arg[:2] == "--"+name+"=" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateConfig(cfg Config) {

@@ -56,7 +56,8 @@ internal/
 │   ├── libp2p_file.go       文件元数据/下载/浏览
 │   ├── libp2p_sync.go       传统线性 HLC 同步（回退方案）
 │   ├── libp2p_merklesync.go 默克尔同步协议处理器
-│   └── libp2p_host.go       libp2p 主机配置
+│   ├── libp2p_host.go       libp2p 主机配置
+│   └── mdns.go              mDNS 节点发现（_parade._tcp）
 └── file/               虚拟文件树、2MB 分块 I/O、BLAKE3 哈希
     ├── vfs.go、chunk.go、hash.go、chunk_tracker.go、transfer.go
 ```
@@ -64,7 +65,7 @@ internal/
 ### 数据流
 
 ```
-前端（待定）←UDS/JSON-RPC→ parade 守护进程 ←EventBus→ 网络 / 文件 / 加密 / 数据库 / 同步
+前端（Tauri/Vue3）←UDS/JSON-RPC→ parade 守护进程 ←EventBus→ 网络 / 文件 / 加密 / 数据库 / 同步
 ```
 
 ## CLI
@@ -79,6 +80,8 @@ parade daemon [选项]
   --uds          UDS 套接字路径（默认 /tmp/parade.sock）
   --port         P2P 监听端口（默认 4327）
   --listen       P2P 监听地址（默认 127.0.0.1）
+  --mdns         启用 mDNS 节点发现（默认启用）
+  --no-mdns      禁用 mDNS 节点发现
 ```
 
 ## IPC 协议
@@ -165,7 +168,7 @@ Parade 使用**稀疏时间桶默克尔树**进行会话同步：
 | P2P | libp2p | 久经考验、协议流、NAT 穿透 |
 | 加密 | AES-256-GCM、Curve25519、Argon2id、BLAKE3 | 标准、经过审计、无意外 |
 | IPC | JSON-RPC 2.0 over UDS | 简单、可调试、语言无关 |
-| 前端 | 待定（计划 Tauri/Vue3） | 旧 Wails 前端在 `deprecated/frontend/` |
+| 前端 | Tauri/Vue3 | Rust IPC 桥接 + Vue3 UI，位于 `frontend/` |
 
 ## 关键约定
 
@@ -190,6 +193,5 @@ go test -bench=. ./internal/core/sync/...     # 基准测试
 
 ## 已知问题
 
-- mDNS 节点发现尚未正常工作；节点通过显式 IP 连接
-- 旧 Wails 前端在 `deprecated/frontend/` — 替代方案待定
+- mDNS 节点发现已修复（`_parade._tcp` 服务），但仅在局域网内有效
 - gRPC protobuf 相关代码已移除

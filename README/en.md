@@ -54,7 +54,8 @@ internal/
 │   ├── libp2p_file.go       File metadata/download/browse
 │   ├── libp2p_sync.go       Legacy linear HLC sync (fallback)
 │   ├── libp2p_merklesync.go Merkle sync protocol handler
-│   └── libp2p_host.go       libp2p host setup
+│   ├── libp2p_host.go       libp2p host setup
+│   └── mdns.go              mDNS peer discovery (_parade._tcp)
 └── file/               Virtual file tree, 2MB chunk I/O, BLAKE3 hashing
     ├── vfs.go, chunk.go, hash.go, chunk_tracker.go, transfer.go
 ```
@@ -62,7 +63,7 @@ internal/
 ### Data Flow
 
 ```
-Frontend (TBD) ←UDS/JSON-RPC→ parade daemon ←EventBus→ Network / File / Crypto / DB / Sync
+Frontend (Tauri/Vue3) ←UDS/JSON-RPC→ parade daemon ←EventBus→ Network / File / Crypto / DB / Sync
 ```
 
 ## CLI
@@ -77,6 +78,8 @@ parade daemon [flags]
   --uds          UDS socket path (default: /tmp/parade.sock)
   --port         P2P listen port (default: 4327)
   --listen       P2P listen address (default: 127.0.0.1)
+  --mdns         Enable mDNS peer discovery (default: enabled)
+  --no-mdns      Disable mDNS peer discovery
 ```
 
 ## IPC Protocol
@@ -163,7 +166,7 @@ Protocol: `/parade/merklesync/1.0.0` (6 message types, 30s timeout)
 | P2P | libp2p | Battle-tested, protocol streams, NAT traversal |
 | Crypto | AES-256-GCM, Curve25519, Argon2id, BLAKE3 | Standard, audited, no surprises |
 | IPC | JSON-RPC 2.0 over UDS | Simple, debuggable, language-agnostic |
-| Frontend | TBD (Tauri/Vue3 planned) | Old Wails frontend in `deprecated/frontend/` |
+| Frontend | Tauri/Vue3 | Rust IPC bridge + Vue3 UI, in `frontend/` |
 
 ## Key Conventions
 
@@ -188,6 +191,5 @@ No Makefile. Standard Go toolchain only.
 
 ## Known Issues
 
-- mDNS peer discovery is not functional; peers connect via explicit IP
-- Old Wails frontend in `deprecated/frontend/` — replacement TBD
+- mDNS peer discovery fixed (`_parade._tcp` service), but LAN-only
 - gRPC protobuf related code has been removed

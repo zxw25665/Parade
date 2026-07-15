@@ -44,10 +44,12 @@ type libp2pEngine struct {
 	file        *libp2pFile
 	linearSync  *libp2pSync
 	merkleSync  *libp2pMerkleSync
+	mdns        *MDNSService
 	bus         eventbus.EventBus
 	crypto      crypto.Engine
 	logr        logger.Logger
 	port        int
+	mdnsEnabled bool
 
 	identifyLn   net.Listener
 	fileEngine   FileTransferEngine
@@ -179,6 +181,10 @@ func (e *libp2pEngine) startIdentifyServer(port int) {
 }
 
 func (e *libp2pEngine) Start(port int) error {
+	return e.StartWithMDNS(port, true)
+}
+
+func (e *libp2pEngine) StartWithMDNS(port int, mdnsEnabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -353,6 +359,27 @@ func (e *libp2pEngine) Start(port int) error {
 	e.startIdentifyServer(port + 1)
 
 	e.port = port
+	e.mdnsEnabled = mdnsEnabled
+
+	if mdnsEnabled {
+		e.mdns = NewMDNSService(host, e.bus, e.logr)
+		e.mdns.SetOnPeerFound(func(info peer.AddrInfo) {
+			if info.ID == host.ID() || len(info.Addrs) == 0 {
+				return
+			}
+			e.log(logger.Debug, "mdns", fmt.Sprintf("peer discovered: %s", info.ID.ShortString()))
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				e.host.Connect(ctx, info)
+			}()
+		})
+		if err := e.mdns.Start(); err != nil {
+			e.log(logger.Warning, "mdns", fmt.Sprintf("mDNS start failed (non-critical): %v", err))
+			e.mdns = nil
+		}
+	}
+
 	e.started = true
 
 	e.log(logger.Info, "libp2p", fmt.Sprintf("libp2p engine started on port %d", port))
@@ -370,11 +397,13 @@ func (e *libp2pEngine) Stop() error {
 	}
 	host := e.host
 	chat := e.chat
+	mdnsSvc := e.mdns
 	identifyLn := e.identifyLn
 	e.started = false
 	e.host = nil
 	e.chat = nil
 	e.linearSync = nil
+	e.mdns = nil
 	e.identifyLn = nil
 	e.mu.Unlock()
 
@@ -386,6 +415,10 @@ func (e *libp2pEngine) Stop() error {
 
 	if chat != nil {
 		chat.Close()
+	}
+
+	if mdnsSvc != nil {
+		mdnsSvc.Stop()
 	}
 
 	if host != nil {
