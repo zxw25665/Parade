@@ -86,3 +86,6 @@ network-debug-instruction.md
 .opencode
 parade
 **/target/
+# pixi environments
+.pixi/*
+!.pixi/config.toml
