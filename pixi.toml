@@ -1,0 +1,66 @@
+[workspace]
+authors = ["Wang Zixin <106529576+zxw25665@users.noreply.github.com>"]
+channels = ["conda-forge"]
+name = "Parade"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+# =============================================================================
+# Parade 开发环境依赖
+#
+# 所有工具链由 pixi 统一管理，无需手动安装 Go / Node / Rust / Python。
+# 首次使用: pixi install
+# 进入环境: pixi shell
+# =============================================================================
+
+[dependencies]
+go = ">=1.26"
+nodejs = ">=22"
+python = ">=3.12"
+rust = ">=1.80"
+pnpm = ">=9"
+gcc = "*"
+pkg-config = "*"
+openssl = "*"
+
+# =============================================================================
+# 任务定义
+#
+# 用法: pixi run <task>
+# 查看所有任务: pixi task list
+# =============================================================================
+
+[tasks]
+
+# ---- Build ----
+build = "go build -o parade ./cmd/parade/"
+build-all = "go build ./..."
+
+# ---- Test ----
+test = "go test ./..."
+test-verbose = "go test -v -count=1 ./..."
+test-race = "go test -race ./..."
+test-sync = "go test -v -count=1 ./internal/core/sync/..."
+test-sync-bench = "go test -bench=. ./internal/core/sync/..."
+
+# 完整测试套件（需先 build）
+test-all = { cmd = "./tests/test_all.sh", depends-on = ["build"] }
+test-cluster = { cmd = "./tests/test_cluster.sh", depends-on = ["build"] }
+test-backend = { cmd = "./tests/test_backend_fixes.sh", depends-on = ["build"] }
+
+# ---- Lint ----
+vet = "go vet ./..."
+
+# ---- Daemon ----
+daemon = { cmd = "./parade daemon --debug", depends-on = ["build"] }
+daemon-headless = { cmd = "./parade daemon --headless --debug", depends-on = ["build"] }
+
+# ---- Frontend ----
+frontend-install = { cmd = "pnpm install", cwd = "frontend" }
+frontend-dev = { cmd = "pnpm run dev", cwd = "frontend", depends-on = ["frontend-install"] }
+frontend-build = { cmd = "pnpm run build", cwd = "frontend", depends-on = ["frontend-install"] }
+frontend-typecheck = { cmd = "pnpm run typecheck", cwd = "frontend" }
+frontend-test = { cmd = "pnpm run test:e2e", cwd = "frontend", depends-on = ["frontend-install"] }
+
+# ---- Clean ----
+clean = "rm -f parade .parade_identity .parade_data.db* .parade.lock test.db test.id"

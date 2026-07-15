@@ -7,11 +7,11 @@
 ## 快速开始
 
 ```bash
-go build -o parade ./cmd/parade/
-./parade daemon --debug
+pixi install          # 安装全部工具链（Go / Node / Rust / Python）
+pixi run daemon       # 编译并启动 daemon（--debug 模式）
 ```
 
-需要 Go 1.26+。无 CGO，无外部依赖。
+环境由 [pixi](https://pixi.sh) 统一管理，无需手动安装任何工具链。
 
 ## 功能
 
@@ -128,14 +128,17 @@ Parade 使用**稀疏时间桶默克尔树**进行会话同步：
 ## 测试套件
 
 ```bash
-./tests/test_all.sh          # 30 项测试，6 个阶段
-./tests/test_backend_fixes.sh # 后端修复验证（21 项检查）
+pixi run test              # 所有单元测试
+pixi run test-sync         # 同步包测试（41 个用例）
+pixi run test-sync-bench   # 同步性能基准（9 个）
+pixi run test-all          # 完整测试套件（30 项，6 个阶段）
+pixi run test-backend      # 后端修复验证（21 项检查）
 ```
 
 | 阶段 | 内容 | 数量 |
 |------|------|------|
 | 构建 | 编译二进制 | 1 |
-| 单元测试 | `go test ./...`（7 个包） | 7 |
+| 单元测试 | `pixi run test`（10 个包） | 10 |
 | 性能基准 | 9 个同步基准测试 | 9 |
 | 正确性 | 3 节点/5 节点同步、边界情况 | 18 |
 | 集群 | 5 节点集成测试（分区容错） | ~80 步 |
@@ -172,6 +175,7 @@ Parade 使用**稀疏时间桶默克尔树**进行会话同步：
 
 | 组件 | 选型 | 理由 |
 |------|------|------|
+| 环境管理 | pixi | 统一管理 Go / Node / Rust / Python 工具链 |
 | 语言 | Go 1.26 | 单二进制、交叉编译、优秀并发模型 |
 | 数据库 | modernc.org/sqlite | 纯 Go、无 CGO、WAL 模式 |
 | P2P | libp2p | 久经考验、协议流、NAT 穿透 |
@@ -191,14 +195,17 @@ Parade 使用**稀疏时间桶默克尔树**进行会话同步：
 ## 开发
 
 ```bash
-go build ./...                       # 构建所有包
-go test ./...                        # 所有单元测试
-go test -v -count=1 ./internal/core/sync/...  # 同步测试
-go test -bench=. ./internal/core/sync/...     # 基准测试
-./tests/test_all.sh                  # 完整测试套件
+pixi run build              # 编译 daemon 二进制
+pixi run build-all          # 构建所有包
+pixi run test               # 所有单元测试
+pixi run test-sync          # 同步测试
+pixi run test-sync-bench    # 基准测试
+pixi run vet                # go vet
+pixi run test-all           # 完整测试套件
+pixi run clean              # 清理构建产物
 ```
 
-无 Makefile。仅使用标准 Go 工具链。
+查看所有可用任务：`pixi task list`
 
 ## 已知问题
 
@@ -207,7 +214,9 @@ go test -bench=. ./internal/core/sync/...     # 基准测试
 ## 前端开发
 
 ```bash
-cd frontend && npm run dev             # 启动前端开发服务器
-cd frontend && npm run build           # 构建生产版本
-cd frontend/src-tauri && cargo check   # 检查 Rust 代码
+pixi run frontend-install     # 安装前端依赖
+pixi run frontend-dev         # 启动前端开发服务器
+pixi run frontend-build       # 构建生产版本
+pixi run frontend-typecheck   # TypeScript 类型检查
+pixi run frontend-test        # E2E 测试
 ```
