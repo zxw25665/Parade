@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pelletier/go-toml/v2"
 	"parade/internal/core/crypto"
 	"parade/internal/core/db"
 	"parade/internal/core/eventbus"
@@ -59,6 +60,9 @@ type App struct {
 	peerJoinedMu  sync.Mutex
 
 	identityPath string
+	dataDir      string
+	savedPeers   []string
+	mdnsEnabled  bool
 
 	syncOrch  *merkleSync.SyncOrchestrator
 	freezeMgr *merkleSync.FreezeManager
@@ -82,6 +86,11 @@ func NewApp(bus eventbus.EventBus, cry crypto.Engine, d db.Database, net Network
 
 func (a *App) WithIdentityPath(path string) *App {
 	a.identityPath = path
+	return a
+}
+
+func (a *App) WithMDNSEnabled(enabled bool) *App {
+	a.mdnsEnabled = enabled
 	return a
 }
 
@@ -116,6 +125,25 @@ func (a *App) Startup() {
 	a.registerEventSubscribers()
 	a.initMerkleSync()
 	a.log(logger.Info, "system", "app started")
+}
+
+func (a *App) startNetwork() error {
+	if a.netEng == nil {
+		return nil
+	}
+	type mdnsStarter interface {
+		StartWithMDNS(port int, mdnsEnabled bool) error
+	}
+	if ms, ok := a.netEng.(mdnsStarter); ok {
+		return ms.StartWithMDNS(4327, a.mdnsEnabled)
+	}
+	type simpleStarter interface {
+		Start(port int) error
+	}
+	if ss, ok := a.netEng.(simpleStarter); ok {
+		return ss.Start(4327)
+	}
+	return nil
 }
 
 func (a *App) initMerkleSync() {
@@ -405,7 +433,7 @@ func (a *App) Login(password string) error {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("identity warning: %v", w))
 	}
 	if len(a.crypto.GetTeamIDs()) > 0 && a.netEng != nil {
-		if serr := a.netEng.Start(4327); serr != nil {
+		if serr := a.startNetwork(); serr != nil {
 			a.log(logger.Warning, "ipc", fmt.Sprintf("auto-start network failed: %v", serr))
 		}
 	}
@@ -464,7 +492,7 @@ func (a *App) JoinTeamWithName(name, secret string) (string, error) {
 	}
 
 	if a.netEng != nil {
-		if err := a.netEng.Start(4327); err != nil {
+		if err := a.startNetwork(); err != nil {
 			a.log(logger.Warning, "ipc", fmt.Sprintf("JoinTeamWithName failed: %v", err))
 			return "", err
 		}
@@ -786,6 +814,78 @@ func (a *App) GetPeers() ([]map[string]string, error) {
 	if err := a.checkLoggedIn(); err != nil { return nil, err }
 	a.log(logger.Debug, "ipc", "GetPeers called")
 	return a.netEng.Peers(), nil
+}
+
+func (a *App) ListSavedPeers() ([]string, error) {
+	if err := a.checkLoggedIn(); err != nil { return nil, err }
+	return a.savedPeers, nil
+}
+
+func (a *App) SavePeer(ipAddress string) error {
+	if err := a.checkLoggedIn(); err != nil { return err }
+	a.log(logger.Debug, "ipc", fmt.Sprintf("SavePeer called (ip=%s)", ipAddress))
+
+	if ipAddress == "" {
+		return errors.New("IP address cannot be empty")
+	}
+
+	for _, p := range a.savedPeers {
+		if p == ipAddress {
+			return nil
+		}
+	}
+
+	a.savedPeers = append(a.savedPeers, ipAddress)
+	return a.savePeersConfig()
+}
+
+func (a *App) RemovePeer(ipAddress string) error {
+	if err := a.checkLoggedIn(); err != nil { return err }
+	a.log(logger.Debug, "ipc", fmt.Sprintf("RemovePeer called (ip=%s)", ipAddress))
+
+	newList := make([]string, 0, len(a.savedPeers))
+	for _, p := range a.savedPeers {
+		if p != ipAddress {
+			newList = append(newList, p)
+		}
+	}
+	a.savedPeers = newList
+	return a.savePeersConfig()
+}
+
+func (a *App) savePeersConfig() error {
+	if a.dataDir == "" {
+		return nil
+	}
+
+	configPath := filepath.Join(a.dataDir, "config.toml")
+	cfg, err := Load(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		cfg = &ConfigFile{}
+	}
+	cfg.Peers.Saved = a.savedPeers
+
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, data, 0644)
+}
+
+func (a *App) LoadPeersConfig(dataDir string) error {
+	a.dataDir = dataDir
+	configPath := filepath.Join(dataDir, "config.toml")
+	cfg, err := Load(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg != nil && cfg.Peers.Saved != nil {
+		a.savedPeers = cfg.Peers.Saved
+	}
+	return nil
 }
 
 func (a *App) ShareDirectory(path string) error {

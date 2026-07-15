@@ -1,3 +1,11 @@
+<!--
+  DEPRECATED: This file is part of the old Wails frontend.
+
+  Replacement: frontend/src/App.vue (Tauri + Vue3)
+
+  See deprecated/frontend/README.md for migration details.
+-->
+
 <template>
   <div class="app-layout">
     <!-- ===== Left Panel: Identity, Conversations, Peers ===== -->

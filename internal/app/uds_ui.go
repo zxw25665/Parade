@@ -7,11 +7,11 @@ import (
 )
 
 type UDSFrontend struct {
-	hub *UDSHub
+	hub IPCClientHub
 	mu  sync.Mutex
 }
 
-func NewUDSFrontend(hub *UDSHub) *UDSFrontend {
+func NewUDSFrontend(hub IPCClientHub) *UDSFrontend {
 	return &UDSFrontend{hub: hub}
 }
 

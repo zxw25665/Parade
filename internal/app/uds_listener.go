@@ -31,7 +31,7 @@ type UDSServer struct {
 	hub *UDSHub
 }
 
-func (s *UDSServer) Hub() *UDSHub {
+func (s *UDSServer) Hub() IPCClientHub {
 	return s.hub
 }
 
