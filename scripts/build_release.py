@@ -102,12 +102,13 @@ def detect_platform() -> tuple[str, str, str, str]:
 def get_bundles_flag(os_name: str) -> str:
     """Return the Tauri `--bundles` flag value for the given OS.
 
-    Linux → "deb", macOS → "dmg", Windows → "msi".
+    Linux → "deb", macOS → "dmg", Windows → "nsis,msi"
+    (NSIS produces setup.exe, MSI for enterprise deployment).
     """
     bundles_map: dict[str, str] = {
         "linux": "deb",
         "macos": "dmg",
-        "windows": "msi",
+        "windows": "nsis,msi",
     }
     flag = bundles_map.get(os_name)
     if flag is None:
@@ -165,8 +166,10 @@ def build_go(project_root: Path, output_name: str, exe_suffix: str) -> Path:
     """
     binary_path = project_root / f"{output_name}{exe_suffix}"
 
+    go_bin = shutil.which("go") or "go"
+
     cmd: list[str] = [
-        "go", "build",
+        go_bin, "build",
         "-o", str(binary_path),
         "-ldflags=-s -w",
         "-trimpath",
@@ -243,8 +246,10 @@ def build_tauri(project_root: Path, bundles_flag: str) -> None:
     """
     frontend_dir = project_root / "frontend"
 
+    pnpm_bin = shutil.which("pnpm") or "pnpm"
+
     cmd: list[str] = [
-        "pnpm", "run", "tauri", "build",
+        pnpm_bin, "run", "tauri", "build",
         "--bundles", bundles_flag,
     ]
 
@@ -260,57 +265,56 @@ def build_tauri(project_root: Path, bundles_flag: str) -> None:
 
 def collect_artifacts(project_root: Path,
                       os_name: str,
-                      arch: str) -> Path:
+                      arch: str,
+                      target_triple: str,
+                      exe_suffix: str) -> Path:
     """Copy build artifacts into the dist/ output directory.
 
     Collects:
-      - Platform-specific installer (deb/dmg/msi) from the Tauri bundle dir.
-      - Raw binary (parade) from the Tauri release dir.
+      - Platform installers (deb/dmg/msi/nsis) from the Tauri bundle dirs.
+      - Raw Go daemon binary from the Tauri release bundle.
+      - Portable .exe + sidecar (Windows only).
 
     Args:
         project_root: Root directory of the Parade project.
         os_name: Short OS name ("linux", "macos", "windows").
         arch: CPU architecture ("x86_64" or "aarch64").
+        target_triple: Rust target triple for the sidecar binary name.
+        exe_suffix: Platform executable suffix ("" or ".exe").
 
     Returns:
         Path to the dist output directory containing the artifacts.
     """
     base = project_root / "frontend" / "src-tauri" / "target" / "release"
+    binaries_dir = project_root / "frontend" / "src-tauri" / "binaries"
 
-    # Map OS name to source bundle directory and installer glob pattern
-    bundle_config: dict[str, tuple[str, str]] = {
-        "linux":   ("bundle/deb", ".deb"),
-        "macos":   ("bundle/dmg", ".dmg"),
-        "windows": ("bundle/msi", ".msi"),
-    }
-
-    config = bundle_config.get(os_name)
-    if config is None:
-        raise RuntimeError(f"Unknown OS name for artifact collection: {os_name!r}")
-
-    bundle_subdir, extension = config
-    src_bundle_dir = base / bundle_subdir
     dest_dir = project_root / "dist" / f"parade-{os_name}-{arch}"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     files_copied: list[str] = []
 
-    # 1. Copy the platform installer
-    if src_bundle_dir.is_dir():
-        for entry in src_bundle_dir.iterdir():
-            if entry.is_file() and entry.suffix == extension:
-                dest = dest_dir / entry.name
-                shutil.copy2(str(entry), str(dest))
-                files_copied.append(str(dest))
-                size_mb = entry.stat().st_size / (1024 * 1024)
-                print(f"    Copied: {entry.name} → {dest} ({size_mb:.1f} MiB)")
-    else:
-        print(f"    Warning: installer directory not found: {src_bundle_dir}")
-        print(f"    The Tauri build may have placed the installer elsewhere.")
+    # 1. Copy platform installers from each bundle subdirectory
+    bundle_dirs: list[tuple[str, str]] = {
+        "linux":   [("bundle/deb", ".deb")],
+        "macos":   [("bundle/dmg", ".dmg")],
+        "windows": [("bundle/msi", ".msi"), ("bundle/nsis", ".exe")],
+    }.get(os_name, [])
+
+    for bundle_subdir, extension in bundle_dirs:
+        src_dir = base / bundle_subdir
+        if src_dir.is_dir():
+            for entry in src_dir.iterdir():
+                if entry.is_file() and entry.suffix == extension:
+                    dest = dest_dir / entry.name
+                    shutil.copy2(str(entry), str(dest))
+                    files_copied.append(str(dest))
+                    size_mb = entry.stat().st_size / (1024 * 1024)
+                    print(f"    Copied: {entry.name} → {dest} ({size_mb:.1f} MiB)")
+        else:
+            print(f"    Warning: installer directory not found: {src_dir}")
 
     # 2. Copy the raw Go daemon binary if present in the release bundle
     binary_src_dir = base / "bundle"
-    exe_suffix = ".exe" if os_name == "windows" else ""
 
     for candidate in [
         binary_src_dir / f"parade-daemon{exe_suffix}",
@@ -325,9 +329,37 @@ def collect_artifacts(project_root: Path,
             size_mb = candidate.stat().st_size / (1024 * 1024)
             print(f"    Copied: {candidate.name} → {dest} ({size_mb:.1f} MiB)")
 
+    # 3. Portable bundle (Windows only): app exe + sidecar, extract-and-run
+    if os_name == "windows":
+        portable_dir = dest_dir / "portable"
+        portable_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy the Tauri app exe from release dir
+        app_exe = base / f"parade{exe_suffix}"
+        if app_exe.is_file():
+            dest = portable_dir / app_exe.name
+            shutil.copy2(str(app_exe), str(dest))
+            files_copied.append(str(dest))
+            size_mb = app_exe.stat().st_size / (1024 * 1024)
+            print(f"    Copied: {app_exe.name} → {dest} ({size_mb:.1f} MiB)")
+
+            # Copy sidecar alongside the portable exe
+            sidecar_name = f"parade-daemon-{target_triple}{exe_suffix}"
+            sidecar_src = binaries_dir / sidecar_name
+            if sidecar_src.is_file():
+                dest = portable_dir / sidecar_name
+                shutil.copy2(str(sidecar_src), str(dest))
+                files_copied.append(str(dest))
+                size_mb = sidecar_src.stat().st_size / (1024 * 1024)
+                print(f"    Copied: {sidecar_name} → {dest} ({size_mb:.1f} MiB)")
+            else:
+                print(f"    Warning: sidecar not found for portable bundle: {sidecar_src}")
+        else:
+            print(f"    Warning: Tauri app exe not found: {app_exe}")
+
     if not files_copied:
         print(f"    Warning: no artifacts found to copy from the Tauri bundle.")
-        print(f"    Expected location: {src_bundle_dir}")
+        print(f"    Expected location: {base}")
 
     return dest_dir
 
@@ -400,7 +432,8 @@ def main() -> None:
 
     # ── Step 6: Collect artifacts ──────────────────────────────────────
     print("[6/6] Collecting artifacts to dist/...")
-    dest_dir = collect_artifacts(PROJECT_ROOT, os_name, arch)
+    dest_dir = collect_artifacts(PROJECT_ROOT, os_name, arch,
+                                  target_triple, exe_suffix)
     print()
 
     # ── Summary ────────────────────────────────────────────────────────
