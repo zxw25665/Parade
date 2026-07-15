@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, RunEvent};
+use tauri::RunEvent;
 use tracing::{error, info};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -121,7 +121,8 @@ mod uds {
     }
 
     impl UDSConnection {
-        pub fn new(pipe_name: String) -> Result<Self, anyhow::Error> {
+        pub fn new(socket_path: PathBuf) -> Result<Self, anyhow::Error> {
+            let pipe_name = socket_path.to_string_lossy().to_string();
             Ok(Self { pipe_name })
         }
 
