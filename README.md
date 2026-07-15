@@ -26,8 +26,8 @@ pixi run daemon       # 编译并启动 daemon（--debug 模式）
 - **Tauri/Vue3 桌面应用** — 位于 `frontend/`
 - 完整的认证流程：注册身份 → 登录 → 创建/加入团队
 - 三栏式聊天界面：会话列表 + 消息面板 + 文件/下载面板
-- 实时事件推送：通过持久 UDS 连接接收新消息、文件进度、Peer 状态
-- Rust IPC 桥接层自动拉起 Go daemon，并通过 UDS 转发请求和事件
+- 实时事件推送：通过持久 IPC 连接接收新消息、文件进度、Peer 状态
+- Rust IPC 桥接层自动拉起 Go daemon，并通过 IPC 转发请求和事件
 
 ## 架构
 
@@ -36,7 +36,7 @@ cmd/parade/           CLI 入口（daemon、version）
 ├── main.go
 └── daemon/
     ├── daemon.go         引擎组装、模式控制、信号处理
-    └── lockfile.go       单实例锁（flock）
+    └── lockfile.go       单实例锁（跨平台文件锁）
 
 internal/
 ├── app/               业务编排层，JSON-RPC API（36 个方法）
@@ -73,7 +73,7 @@ internal/
 ### 数据流
 
 ```
-前端（Tauri/Vue3）←UDS/JSON-RPC→ parade 守护进程 ←EventBus→ 网络 / 文件 / 加密 / 数据库 / 同步
+前端（Tauri/Vue3）←IPC/JSON-RPC→ parade 守护进程 ←EventBus→ 网络 / 文件 / 加密 / 数据库 / 同步
 ```
 
 ## CLI
@@ -81,11 +81,11 @@ internal/
 ```bash
 parade daemon [选项]
 
-  --headless     不启动 UDS 监听（自动化/CI）
+  --headless     不启动 IPC 监听（自动化/CI）
   --debug        允许多实例、自定义 P2P 接口
   --production   强制 P2P 回环、单实例锁
   --data-dir     数据目录（默认 ./.parade_data）
-  --uds          UDS 套接字路径（默认 /tmp/parade.sock）
+  --uds          IPC 路径（Unix: 套接字路径, Windows: 管道名）
   --port         P2P 监听端口（默认 4327）
   --listen       P2P 监听地址（默认 127.0.0.1）
   --mdns         启用 mDNS 节点发现（默认启用）
@@ -94,7 +94,7 @@ parade daemon [选项]
 
 ## IPC 协议
 
-基于 Unix 域套接字的 JSON-RPC 2.0，换行分隔。
+基于 IPC（Unix 域套接字 / Windows 命名管道）的 JSON-RPC 2.0，换行分隔。
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"SendTeamChat","params":["hello"]}
@@ -180,7 +180,7 @@ pixi run test-backend      # 后端修复验证（21 项检查）
 | 数据库 | modernc.org/sqlite | 纯 Go、无 CGO、WAL 模式 |
 | P2P | libp2p | 久经考验、协议流、NAT 穿透 |
 | 加密 | AES-256-GCM、Curve25519、Argon2id、BLAKE3 | 标准、经过审计、无意外 |
-| IPC | JSON-RPC 2.0 over UDS | 简单、可调试、语言无关 |
+| IPC | JSON-RPC 2.0 over IPC（UDS / 命名管道）| 简单、可调试、语言无关 |
 | 前端 | Tauri/Vue3 | Rust IPC 桥接 + Vue3 UI，位于 `frontend/` |
 
 ## 关键约定

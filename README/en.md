@@ -24,8 +24,8 @@ Requires Go 1.26+. No CGO, no external dependencies.
 - **Tauri/Vue3 Desktop App** — in `frontend/`
 - Full auth flow: Register identity → Login → Create/Join team
 - Three-panel chat UI: conversation list + message panel + file/download panel
-- Real-time event push via persistent UDS connection: new messages, file progress, peer status
-- Rust IPC bridge auto-spawns the Go daemon and forwards requests/events over UDS
+- Real-time event push via persistent IPC connection: new messages, file progress, peer status
+- Rust IPC bridge auto-spawns the Go daemon and forwards requests/events over IPC
 
 ## Architecture
 
@@ -34,7 +34,7 @@ cmd/parade/           CLI entrypoint (daemon, version)
 ├── main.go
 └── daemon/
     ├── daemon.go         Engine wiring, mode control, signal handling
-    └── lockfile.go       Single-instance flock
+    └── lockfile.go       Single-instance lock (cross-platform)
 
 internal/
 ├── app/               Business orchestration, JSON-RPC API (36 methods)
@@ -71,7 +71,7 @@ internal/
 ### Data Flow
 
 ```
-Frontend (Tauri/Vue3) ←UDS/JSON-RPC→ parade daemon ←EventBus→ Network / File / Crypto / DB / Sync
+Frontend (Tauri/Vue3) ←IPC/JSON-RPC→ parade daemon ←EventBus→ Network / File / Crypto / DB / Sync
 ```
 
 ## CLI
@@ -79,11 +79,11 @@ Frontend (Tauri/Vue3) ←UDS/JSON-RPC→ parade daemon ←EventBus→ Network / 
 ```bash
 parade daemon [flags]
 
-  --headless     No UDS listener (automation/CI)
+  --headless     No IPC listener (automation/CI)
   --debug        Multi-instance allowed, custom P2P interface
   --production   Force loopback P2P, single-instance lock
   --data-dir     Data directory (default: ./.parade_data)
-  --uds          UDS socket path (default: /tmp/parade.sock)
+  --uds          IPC path (Unix: socket path, Windows: pipe name)
   --port         P2P listen port (default: 4327)
   --listen       P2P listen address (default: 127.0.0.1)
   --mdns         Enable mDNS peer discovery (default: enabled)
@@ -92,7 +92,7 @@ parade daemon [flags]
 
 ## IPC Protocol
 
-JSON-RPC 2.0 over Unix domain socket, newline-delimited.
+JSON-RPC 2.0 over IPC (Unix domain socket / Windows named pipe), newline-delimited.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"SendTeamChat","params":["hello"]}
@@ -174,7 +174,7 @@ Protocol: `/parade/merklesync/1.0.0` (6 message types, 30s timeout)
 | Database | modernc.org/sqlite | Pure Go, no CGO, WAL mode |
 | P2P | libp2p | Battle-tested, protocol streams, NAT traversal |
 | Crypto | AES-256-GCM, Curve25519, Argon2id, BLAKE3 | Standard, audited, no surprises |
-| IPC | JSON-RPC 2.0 over UDS | Simple, debuggable, language-agnostic |
+| IPC | JSON-RPC 2.0 over UDS/named pipe | Simple, debuggable, language-agnostic |
 | Frontend | Tauri/Vue3 | Rust IPC bridge + Vue3 UI, in `frontend/` |
 
 ## Key Conventions
