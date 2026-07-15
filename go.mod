@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/gofrs/flock v0.13.0
 	github.com/google/uuid v1.6.0
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-pubsub v0.16.0

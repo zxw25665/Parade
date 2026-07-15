@@ -42,11 +42,11 @@ Usage:
   parade help              Print this help
 
 Daemon Flags:
-  --uds <path>             Unix domain socket path (default: /tmp/parade.sock)
+  --uds <path>             IPC path (Unix: socket path, Windows: pipe name)
   --data-dir <dir>         Data directory for DB, identity, logs (default: $PWD)
   --port <n>               P2P listen port (default: 4327)
   --listen <addr>          P2P listen address (default: 127.0.0.1)
-  --headless               Run without UDS listener (for automation/testing)
+  --headless               Run without IPC listener (for automation/testing)
   --debug                  Debug mode: allow multi-instance, custom listen interface
   --production             Production mode: enforce loopback-only, single-instance lock
   --mdns                   Enable mDNS peer discovery (default: enabled)
@@ -57,8 +57,8 @@ Mode Precedence:
   --headless is orthogonal and can be combined with any mode.
 
 Examples:
-  parade daemon                              # Normal mode, UDS at /tmp/parade.sock
-  parade daemon --headless                   # Headless, no UDS, for automated tests
+  parade daemon                              # Normal mode, IPC at default path
+  parade daemon --headless                   # Headless, no IPC, for automated tests
   parade daemon --debug --listen 0.0.0.0     # Debug: listen on all interfaces
   parade daemon --production                 # Production: enforced security
   parade daemon --no-mdns                     # Disable mDNS discovery

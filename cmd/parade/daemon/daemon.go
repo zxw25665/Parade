@@ -122,7 +122,7 @@ func Run(args []string) {
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	log.Printf("[daemon] received signal %v, shutting down...", sig)
 
@@ -165,7 +165,7 @@ func parseFlagsWithTracking(args []string) (*app.DaemonCLIConfig, error) {
 
 	cliCfg := &app.DaemonCLIConfig{}
 
-	fs.StringVar(&cliCfg.UDS, "uds", "", "Unix domain socket path")
+	fs.StringVar(&cliCfg.UDS, "uds", "", "IPC path (UDS socket or named pipe name)")
 	fs.StringVar(&cliCfg.DataDir, "data-dir", "", "Data directory (default: current directory)")
 	fs.IntVar(&cliCfg.Port, "port", 0, "P2P listen port")
 	fs.StringVar(&cliCfg.ListenAddr, "listen", "", "P2P listen address")
