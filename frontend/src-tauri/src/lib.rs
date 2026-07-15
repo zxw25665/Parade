@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tauri::RunEvent;
+use tauri::Emitter;
 use tracing::{error, info};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -18,6 +19,9 @@ static UDS_CLIENT: Lazy<Arc<Mutex<Option<UDSConnection>>>> =
 
 static APP_HANDLE: Lazy<Arc<Mutex<Option<tauri::AppHandle>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
+
+static LAST_DAEMON_ERROR: Lazy<Mutex<Option<String>>> =
+    Lazy::new(|| Mutex::new(None));
 
 static EVENT_READER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
@@ -115,6 +119,7 @@ mod uds {
 mod uds {
     use super::*;
     use std::io::{Read, Write};
+    use std::os::windows::ffi::OsStrExt;
 
     pub struct UDSConnection {
         pipe_name: String,
@@ -128,6 +133,33 @@ mod uds {
 
         pub fn connect_stream(&self) -> Result<std::fs::File, anyhow::Error> {
             let pipe_path = format!("\\\\.\\pipe\\{}", self.pipe_name);
+
+            // Use WaitNamedPipeW to poll with a timeout before opening.
+            // On Windows, CreateFileW (used by std::fs::File::open) blocks
+            // indefinitely when no pipe server is listening — unlike Unix
+            // where connect() returns immediately with an error. This call
+            // ensures the polling loop in spawn_daemon() can retry or timeout.
+            let pipe_path_wide: Vec<u16> = std::ffi::OsStr::new(&pipe_path)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            let timeout_ms: u32 = 500;
+            unsafe {
+                let available = winapi::um::namedpipeapi::WaitNamedPipeW(
+                    pipe_path_wide.as_ptr(),
+                    timeout_ms,
+                );
+                if available == 0 {
+                    let err = std::io::Error::last_os_error();
+                    return Err(anyhow::anyhow!(
+                        "Named pipe {} not available within {}ms: {}",
+                        pipe_path, timeout_ms, err
+                    ));
+                }
+            }
+
+            // Pipe is available — open will complete immediately
             let pipe = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -190,6 +222,36 @@ fn get_daemon_path() -> PathBuf {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
 
+    // Search for Tauri sidecar pattern: parade-daemon-{target_triple}{exe_suffix}
+    // Tauri's externalBin bundles the daemon with the target triple in the name,
+    // and the release bundle places it alongside the main exe.
+    if let Ok(entries) = std::fs::read_dir(&exe_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("parade-daemon-") || name_str.starts_with("parade-daemon.") {
+                let path = entry.path();
+                if path.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(meta) = path.metadata() {
+                            if meta.permissions().mode() & 0o111 != 0 {
+                                return path;
+                            }
+                        }
+                        continue;
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        return path;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to explicit candidates
     let candidates = [
         exe_dir.join("parade"),
         exe_dir.join("parade.exe"),
@@ -383,6 +445,59 @@ fn start_event_reader(uds_path: PathBuf, app_handle: tauri::AppHandle) {
     });
 }
 
+#[cfg(windows)]
+fn start_event_reader(pipe_name: String, app_handle: tauri::AppHandle) {
+    use std::io::{BufRead, BufReader};
+
+    std::thread::spawn(move || {
+        let mut backoff_ms: u64 = 500;
+        let max_backoff_ms: u64 = 30000;
+
+        while !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
+            let pipe_path = format!("\\\\.\\pipe\\{}", pipe_name);
+
+            match std::fs::OpenOptions::new().read(true).open(&pipe_path) {
+                Ok(pipe) => {
+                    let reader = BufReader::new(pipe);
+                    backoff_ms = 500;
+
+                    for line in reader.lines() {
+                        if EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        match line {
+                            Ok(line) => {
+                                let line = line.trim();
+                                if line.is_empty() {
+                                    continue;
+                                }
+                                if let Ok(event) = serde_json::from_str::<JsonRpcEvent>(line) {
+                                    let _ = app_handle.emit(
+                                        &event.params.event,
+                                        event.params.data.unwrap_or(serde_json::Value::Null),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!("Event reader read error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Event reader connect error: {}", e);
+                }
+            }
+
+            if !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                backoff_ms = std::cmp::min(backoff_ms * 2, max_backoff_ms);
+            }
+        }
+    });
+}
+
 #[tauri::command]
 fn on_foreground() -> Result<(), String> {
     let conn = UDS_CLIENT.lock().map_err(|e| e.to_string())?;
@@ -396,6 +511,11 @@ fn on_foreground() -> Result<(), String> {
 #[tauri::command]
 fn write_log_file(file_path: String, content: String) -> Result<(), String> {
     std::fs::write(&file_path, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_daemon_error() -> Result<Option<String>, String> {
+    Ok(LAST_DAEMON_ERROR.lock().map_err(|e| e.to_string())?.clone())
 }
 
 #[tauri::command]
@@ -642,7 +762,10 @@ pub fn run() {
             info!("Setting up Tauri app...");
 
             if let Err(e) = spawn_daemon() {
-                error!("Failed to spawn daemon: {}", e);
+                let err_msg = e.to_string();
+                error!("Failed to spawn daemon: {}", err_msg);
+                *LAST_DAEMON_ERROR.lock().unwrap() = Some(err_msg.clone());
+                let _ = app.handle().emit("daemon_error", err_msg.clone());
             } else {
                 let handle = app.handle().clone();
                 *APP_HANDLE.lock().unwrap() = Some(handle.clone());
@@ -651,6 +774,12 @@ pub fn run() {
                 {
                     let uds_path = get_uds_path();
                     start_event_reader(uds_path, handle);
+                }
+
+                #[cfg(windows)]
+                {
+                    let pipe_name = get_uds_path().to_string_lossy().to_string();
+                    start_event_reader(format!("{}_events", pipe_name), handle);
                 }
             }
 
@@ -664,6 +793,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             call_daemon,
+            get_daemon_error,
             register,
             login,
             check_has_identity,

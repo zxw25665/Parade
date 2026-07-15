@@ -335,7 +335,7 @@ def collect_artifacts(project_root: Path,
         portable_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy the Tauri app exe from release dir
-        app_exe = base / f"parade{exe_suffix}"
+        app_exe = base / f"parade_tauri{exe_suffix}"
         if app_exe.is_file():
             dest = portable_dir / app_exe.name
             shutil.copy2(str(app_exe), str(dest))

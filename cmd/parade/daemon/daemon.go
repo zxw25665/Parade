@@ -94,7 +94,7 @@ func Run(args []string) {
 		}
 		ipcSrv = app.NewIPCServer(udsPath)
 		log.Printf("[daemon] using IPC: %s", udsPath)
-		ui = app.NewUDSFrontend(ipcSrv.Hub())
+		ui = app.NewUDSFrontend(ipcSrv.Hub(), ipcSrv.EventHub())
 	} else {
 		log.Println("[daemon] headless mode — no IPC listener")
 		ui = &app.NullUI{}

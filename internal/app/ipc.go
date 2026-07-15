@@ -9,6 +9,12 @@ type IPCServer interface {
 	Start() error
 	Stop()
 	Hub() IPCClientHub
+	// EventHub returns a separate hub for event-only listeners.
+	// On platforms where RPC and events share the same transport (Unix UDS),
+	// this returns nil and events are multiplexed on the main hub.
+	// On platforms that need a dedicated event pipe (Windows named pipes),
+	// this returns a distinct hub with write-only server access.
+	EventHub() IPCClientHub
 }
 
 type IPCClientHub interface {
