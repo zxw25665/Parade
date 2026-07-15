@@ -90,3 +90,4 @@ parade-*
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+frontend/src-tauri/gen/schemas/
