@@ -18,9 +18,17 @@ skip()  { printf "  [SKIP]  %s\n" "$*"; ((SKIP++)); }
 header(){ printf "\n━━━ %s ━━━\n" "$*"; }
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 0: Build
+# Phase 0: Cleanup stale artifacts from project root
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 0: Build"
+header "Phase 0: Cleanup Stale Artifacts"
+info "removing stale files from project root..."
+rm -f "${ROOT_DIR}/.parade_identity" "${ROOT_DIR}/.parade_data.db"* "${ROOT_DIR}/.parade.lock" "${ROOT_DIR}/test.db" "${ROOT_DIR}/test.id" 2>/dev/null || true
+pass "stale artifacts cleaned"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Phase 1: Build
+# ────────────────────────────────────────────────────────────────────────────
+header "Phase 1: Build"
 if go build -o "$PARADE_BIN" ./cmd/parade/ 2>&1; then
     pass "parade binary built"
 else
@@ -29,9 +37,9 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 1: Go Unit Tests (all packages)
+# Phase 2: Go Unit Tests (all packages)
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 1: Go Unit Tests"
+header "Phase 2: Go Unit Tests"
 
 GO_TEST_OUTPUT=$(cd "$ROOT_DIR" && go test ./... -count=1 -timeout=120s 2>&1)
 GO_TEST_EXIT=$?
@@ -53,9 +61,9 @@ while IFS= read -r line; do
 done <<< "$GO_TEST_OUTPUT"
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 2: Sync Package Benchmarks
+# Phase 3: Sync Package Benchmarks
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 2: Sync Performance Benchmarks"
+header "Phase 3: Sync Performance Benchmarks"
 
 BENCH_OUTPUT=$(cd "$ROOT_DIR" && go test ./internal/core/sync/... -bench=. -benchmem -count=1 -timeout=120s 2>&1)
 BENCH_EXIT=$?
@@ -72,9 +80,9 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 3: Sync Correctness Summary
+# Phase 4: Sync Correctness Summary
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 3: Sync Correctness Test Summary"
+header "Phase 4: Sync Correctness Test Summary"
 
 SYNC_TEST_OUTPUT=$(cd "$ROOT_DIR" && go test ./internal/core/sync/... -v -count=1 -timeout=120s -run 'Test3Node|Test5Node|TestEmpty|TestSingleMessage|TestSyncWithFrozen|TestSync_Cross|TestSync_Deterministic|TestSync_Content|TestLargeDataset|TestConcurrent' 2>&1)
 SYNC_TEST_EXIT=$?
@@ -91,9 +99,9 @@ FAIL_COUNT=$(echo "$SYNC_TEST_OUTPUT" | grep -c '^--- FAIL:')
 echo "    Correctness tests: $PASS_COUNT passed, $FAIL_COUNT failed"
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 4: Cluster Integration Test (3-node)
+# Phase 5: Cluster Integration Test (3-node)
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 4: Cluster Integration Test (5-node)"
+header "Phase 5: Cluster Integration Test (5-node)"
 
 CLUSTER_OUTPUT=$(PARADE_BIN="$PARADE_BIN" bash "$ROOT_DIR/tests/test_cluster.sh" 2>&1)
 CLUSTER_EXIT=$?
@@ -107,9 +115,9 @@ fi
 echo "$CLUSTER_OUTPUT" | grep -E '\[PASS\]|\[FAIL\]' | sed 's/^/    /'
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 5: Merkle Sync Integration Verification
+# Phase 6: Merkle Sync Integration Verification
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 5: Merkle Sync Integration Verification"
+header "Phase 6: Merkle Sync Integration Verification"
 
 # Verify Merkle sync protocol constant in source
 if grep -q "protocolMerkleSync" "$ROOT_DIR/internal/network/libp2p_merklesync.go" && \
@@ -155,9 +163,9 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 6: Architecture Verification
+# Phase 7: Architecture Verification
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 6: Architecture Verification"
+header "Phase 7: Architecture Verification"
 
 # Verify all expected files exist
 EXPECTED_FILES=(

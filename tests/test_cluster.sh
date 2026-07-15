@@ -117,6 +117,10 @@ echo "  Base dir:   $BASE_DIR"
 echo "  Instances:  ${ALL_NODES[*]}"
 echo ""
 
+# Clean stale project root artifacts that could interfere with tests
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+rm -f "${ROOT_DIR}/.parade_identity" "${ROOT_DIR}/.parade_data.db"* "${ROOT_DIR}/.parade.lock" "${ROOT_DIR}/test.db" "${ROOT_DIR}/test.id" 2>/dev/null || true
+
 # ────────────────────────────────────────────────────────────────────────────
 header "Phase 1: Start Instances"
 # ────────────────────────────────────────────────────────────────────────────

@@ -125,14 +125,18 @@ mod uds {
             Ok(Self { pipe_name })
         }
 
-        pub fn call(&self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, anyhow::Error> {
+        pub fn connect_stream(&self) -> Result<std::fs::File, anyhow::Error> {
             let pipe_path = format!("\\\\.\\pipe\\{}", self.pipe_name);
-
-            let mut pipe = std::fs::OpenOptions::new()
+            let pipe = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(&pipe_path)
                 .map_err(|e| anyhow::anyhow!("Failed to open pipe {}: {}", pipe_path, e))?;
+            Ok(pipe)
+        }
+
+        pub fn call(&self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, anyhow::Error> {
+            let mut pipe = self.connect_stream()?;
 
             let req = JsonRpcRequest {
                 jsonrpc: "2.0".to_string(),
@@ -165,6 +169,7 @@ use uds::UDSConnection;
 use uds::UDSConnection;
 
 fn get_data_dir() -> PathBuf {
+    // 1. Explicit env var override
     if let Ok(dir) = std::env::var("PARADE_DATA_DIR") {
         let p = PathBuf::from(&dir);
         if p.exists() {
@@ -172,27 +177,7 @@ fn get_data_dir() -> PathBuf {
         }
     }
 
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_default();
-
-    let daemon_candidates = [
-        exe_dir.join("parade"),
-        exe_dir.join("parade.exe"),
-        PathBuf::from("/home/wzx/Parade/parade"),
-        PathBuf::from("../../../parade"),
-        PathBuf::from("../parade"),
-    ];
-
-    for candidate in &daemon_candidates {
-        if let Some(parent) = candidate.parent() {
-            if parent.join(".parade_identity").exists() {
-                return parent.to_path_buf();
-            }
-        }
-    }
-
+    // 2. Default: XDG data directory (~/.local/share/parade on Linux)
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("parade")
@@ -207,7 +192,6 @@ fn get_daemon_path() -> PathBuf {
     let candidates = [
         exe_dir.join("parade"),
         exe_dir.join("parade.exe"),
-        PathBuf::from("/home/wzx/Parade/parade"),
         PathBuf::from("../../../parade"),
         PathBuf::from("../parade"),
     ];
@@ -295,9 +279,29 @@ fn spawn_daemon() -> Result<(), anyhow::Error> {
         *handle = Some(child);
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
     let client = UDSConnection::new(uds_path)?;
+
+    // Poll the daemon's IPC endpoint until it accepts connections (up to 10s)
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(10);
+    loop {
+        match client.connect_stream() {
+            Ok(_) => {
+                info!("Daemon IPC ready after {:?}", start.elapsed());
+                break;
+            }
+            Err(e) => {
+                if start.elapsed() >= timeout {
+                    return Err(anyhow::anyhow!(
+                        "Daemon IPC not ready after {:?}: {}",
+                        timeout, e
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+
     let mut conn = UDS_CLIENT.lock().unwrap();
     *conn = Some(client);
 

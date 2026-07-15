@@ -26,6 +26,10 @@ echo "║      Parade Backend Fixes Integration Test Suite           ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
+# Clean stale project root artifacts
+info "cleaning stale artifacts from project root..."
+rm -f "${ROOT_DIR}/.parade_identity" "${ROOT_DIR}/.parade_data.db"* "${ROOT_DIR}/.parade.lock" "${ROOT_DIR}/test.db" "${ROOT_DIR}/test.id" 2>/dev/null || true
+
 # ────────────────────────────────────────────────────────────────────────────
 # Phase 1: Build
 # ────────────────────────────────────────────────────────────────────────────
