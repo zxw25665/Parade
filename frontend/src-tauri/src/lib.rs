@@ -320,8 +320,8 @@ fn spawn_daemon() -> Result<(), anyhow::Error> {
     {
         let child = Command::new(&daemon_path)
             .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()?;
 
         let mut handle = DAEMON_HANDLE.lock().unwrap();
@@ -335,8 +335,8 @@ fn spawn_daemon() -> Result<(), anyhow::Error> {
 
         let child = Command::new(&daemon_path)
             .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()?;
 
@@ -346,9 +346,9 @@ fn spawn_daemon() -> Result<(), anyhow::Error> {
 
     let client = UDSConnection::new(uds_path)?;
 
-    // Poll the daemon's IPC endpoint until it accepts connections (up to 10s)
+    // Poll the daemon's IPC endpoint until it accepts connections (up to 60s)
     let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(10);
+    let timeout = std::time::Duration::from_secs(60);
     loop {
         match client.connect_stream() {
             Ok(_) => {
@@ -520,10 +520,26 @@ fn get_daemon_error() -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn call_daemon(method: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    let conn = UDS_CLIENT.lock().map_err(|e| e.to_string())?;
-    let client = conn.as_ref().ok_or("Daemon not connected")?;
+    // Fast path: use existing connection
+    {
+        let conn = UDS_CLIENT.lock().map_err(|e| e.to_string())?;
+        if let Some(client) = conn.as_ref() {
+            return client.call(&method, params).map_err(|e| e.to_string());
+        }
+    }
 
-    client.call(&method, params).map_err(|e| e.to_string())
+    // Slow path: daemon may already be running (e.g. leftover from
+    // previous session, or the background spawn thread hasn't finished).
+    // Try a direct connection and cache it for future calls.
+    let uds_path = get_uds_path();
+    let client = UDSConnection::new(uds_path).map_err(|e| e.to_string())?;
+    let result = client.call(&method, params).map_err(|e| e.to_string())?;
+
+    if let Ok(mut conn) = UDS_CLIENT.lock() {
+        *conn = Some(client);
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -761,27 +777,39 @@ pub fn run() {
         .setup(|app| {
             info!("Setting up Tauri app...");
 
-            if let Err(e) = spawn_daemon() {
-                let err_msg = e.to_string();
-                error!("Failed to spawn daemon: {}", err_msg);
-                *LAST_DAEMON_ERROR.lock().unwrap() = Some(err_msg.clone());
-                let _ = app.handle().emit("daemon_error", err_msg.clone());
-            } else {
-                let handle = app.handle().clone();
-                *APP_HANDLE.lock().unwrap() = Some(handle.clone());
+            // Spawn daemon on a background thread — do NOT block the UI.
+            // The synchronous polling loop in spawn_daemon() can take several
+            // seconds while the daemon initializes; running it in setup() would
+            // block the main thread and cause Windows to mark the app as
+            // "Not Responding".
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                match spawn_daemon() {
+                    Ok(()) => {
+                        *APP_HANDLE.lock().unwrap() = Some(handle.clone());
 
-                #[cfg(unix)]
-                {
-                    let uds_path = get_uds_path();
-                    start_event_reader(uds_path, handle);
-                }
+                        #[cfg(unix)]
+                        {
+                            let uds_path = get_uds_path();
+                            start_event_reader(uds_path, handle.clone());
+                        }
 
-                #[cfg(windows)]
-                {
-                    let pipe_name = get_uds_path().to_string_lossy().to_string();
-                    start_event_reader(format!("{}_events", pipe_name), handle);
+                        #[cfg(windows)]
+                        {
+                            let pipe_name = get_uds_path().to_string_lossy().to_string();
+                            start_event_reader(format!("{}_events", pipe_name), handle.clone());
+                        }
+
+                        let _ = handle.emit("daemon_ready", ());
+                    }
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        error!("Failed to spawn daemon: {}", err_msg);
+                        *LAST_DAEMON_ERROR.lock().unwrap() = Some(err_msg.clone());
+                        let _ = handle.emit("daemon_error", err_msg);
+                    }
                 }
-            }
+            });
 
             Ok(())
         })
