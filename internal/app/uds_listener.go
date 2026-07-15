@@ -37,6 +37,8 @@ func (s *UDSServer) Hub() IPCClientHub {
 	return s.hub
 }
 
+func (s *UDSServer) EventHub() IPCClientHub { return nil }
+
 func (s *UDSServer) Start() error {
 	os.Remove(s.hub.path)
 

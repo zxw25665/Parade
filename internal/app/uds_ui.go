@@ -7,17 +7,19 @@ import (
 )
 
 type UDSFrontend struct {
-	hub IPCClientHub
-	mu  sync.Mutex
+	hub      IPCClientHub
+	eventHub IPCClientHub
+	mu       sync.Mutex
 }
 
-func NewUDSFrontend(hub IPCClientHub) *UDSFrontend {
-	return &UDSFrontend{hub: hub}
+func NewUDSFrontend(hub IPCClientHub, eventHub IPCClientHub) *UDSFrontend {
+	return &UDSFrontend{hub: hub, eventHub: eventHub}
 }
 
 func (u *UDSFrontend) Notify(eventName string, data interface{}) {
 	u.mu.Lock()
 	hub := u.hub
+	eventHub := u.eventHub
 	u.mu.Unlock()
 
 	if hub == nil {
@@ -40,6 +42,9 @@ func (u *UDSFrontend) Notify(eventName string, data interface{}) {
 	}
 
 	hub.Broadcast(payload)
+	if eventHub != nil {
+		eventHub.Broadcast(payload)
+	}
 }
 
 type NullUI struct{}

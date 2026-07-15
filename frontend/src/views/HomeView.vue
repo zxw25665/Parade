@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { listen } from '@tauri-apps/api/event'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -9,9 +10,26 @@ const authStore = useAuthStore()
 const loading = ref(true)
 const error = ref('')
 
+let unlistenDaemonError: (() => void) | null = null
+
+const CONNECT_TIMEOUT_MS = 15000
+
 onMounted(async () => {
+  // Listen for daemon error events pushed by the Rust backend
+  listen<string>('daemon_error', (event) => {
+    error.value = event.payload
+    loading.value = false
+  }).then(fn => { unlistenDaemonError = fn })
+
   try {
-    await authStore.checkIdentity()
+    // Race checkIdentity against a hard timeout so the UI never
+    // hangs at "Connecting to Parade..." indefinitely
+    await Promise.race([
+      authStore.checkIdentity(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timed out — daemon not responding')), CONNECT_TIMEOUT_MS)
+      )
+    ])
     
     if (authStore.isLoggedIn && authStore.currentTeam) {
       router.replace('/chat')
@@ -25,6 +43,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+})
+
+onUnmounted(() => {
+  unlistenDaemonError?.()
 })
 
 const statusMessage = computed(() => {

@@ -37,31 +37,51 @@ func NewNPipeServer(name string) *NPipeServer {
 			clients:  make(map[windows.Handle]*npipeClient),
 			done:     make(chan struct{}),
 		},
+		eventHub: &NPipeHub{
+			pipeName: name + "_events",
+			clients:  make(map[windows.Handle]*npipeClient),
+			done:     make(chan struct{}),
+		},
 	}
 }
 
 type NPipeServer struct {
-	hub *NPipeHub
+	hub      *NPipeHub
+	eventHub *NPipeHub
 }
 
 func (s *NPipeServer) Hub() IPCClientHub {
 	return s.hub
 }
 
+func (s *NPipeServer) EventHub() IPCClientHub {
+	return s.eventHub
+}
+
 func (s *NPipeServer) Start() error {
 	go s.hub.listenLoop()
-	log.Printf("[npipe] listening on pipe %s", s.hub.pipeName)
+	go s.eventHub.listenLoopEvents()
+	log.Printf("[npipe] listening on pipe %s (events: %s)", s.hub.pipeName, s.eventHub.pipeName)
 	return nil
 }
 
 func (s *NPipeServer) Stop() {
 	close(s.hub.done)
+	close(s.eventHub.done)
+
 	s.hub.mu.Lock()
 	for handle := range s.hub.clients {
 		windows.CloseHandle(handle)
 	}
 	s.hub.clients = nil
 	s.hub.mu.Unlock()
+
+	s.eventHub.mu.Lock()
+	for handle := range s.eventHub.clients {
+		windows.CloseHandle(handle)
+	}
+	s.eventHub.clients = nil
+	s.eventHub.mu.Unlock()
 }
 
 func (h *NPipeHub) listenLoop() {
@@ -197,6 +217,49 @@ func (w *npipeWriter) Write(p []byte) (int, error) {
 		return int(n), err
 	}
 	return int(n), nil
+}
+
+func (h *NPipeHub) listenLoopEvents() {
+	// Event-only pipe: server writes events, clients only read.
+	// No handleClient goroutine — data written by Broadcast is consumed
+	// by the remote event reader (Tauri Rust side), not by the Go side.
+	for {
+		select {
+		case <-h.done:
+			return
+		default:
+		}
+
+		pipePath, _ := windows.UTF16PtrFromString(`\\.\pipe\` + h.pipeName)
+
+		handle, err := windows.CreateNamedPipe(
+			pipePath,
+			windows.PIPE_ACCESS_OUTBOUND,
+			windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT,
+			windows.PIPE_UNLIMITED_INSTANCES,
+			pipeBufferSize,
+			pipeBufferSize,
+			0,
+			nil,
+		)
+		if err != nil {
+			log.Printf("[npipe] CreateNamedPipe(event) error: %v", err)
+			continue
+		}
+
+		err = windows.ConnectNamedPipe(handle, nil)
+		if err != nil && err != windows.ERROR_PIPE_CONNECTED {
+			log.Printf("[npipe] ConnectNamedPipe(event) error: %v", err)
+			windows.CloseHandle(handle)
+			continue
+		}
+
+		h.mu.Lock()
+		h.clients[handle] = &npipeClient{handle: handle, hub: h}
+		h.mu.Unlock()
+
+		log.Printf("[npipe] event client connected, handle=%d", handle)
+	}
 }
 
 func (h *NPipeHub) Broadcast(payload []byte) {
