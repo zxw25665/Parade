@@ -55,6 +55,9 @@ vet = "go vet ./..."
 daemon = { cmd = "./parade daemon --debug", depends-on = ["build"] }
 daemon-headless = { cmd = "./parade daemon --headless --debug", depends-on = ["build"] }
 
+# ---- Dev (daemon + frontend together) ----
+dev = { cmd = "./scripts/dev.sh", depends-on = ["build", "frontend-install"] }
+
 # ---- Frontend ----
 frontend-install = { cmd = "pnpm install", cwd = "frontend" }
 frontend-dev = { cmd = "pnpm run dev", cwd = "frontend", depends-on = ["frontend-install"] }
