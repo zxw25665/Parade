@@ -85,6 +85,7 @@ network-debug-instruction.md
 .parade_*
 .opencode
 parade
+parade-*
 **/target/
 # pixi environments
 .pixi/*

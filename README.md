@@ -197,6 +197,7 @@ pixi run test-backend      # 后端修复验证（21 项检查）
 ```bash
 pixi run build              # 编译 daemon 二进制
 pixi run build-all          # 构建所有包
+pixi run build-release      # 编译发行版本（deb/dmg/msi）
 pixi run test               # 所有单元测试
 pixi run test-sync          # 同步测试
 pixi run test-sync-bench    # 基准测试

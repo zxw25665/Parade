@@ -5,11 +5,11 @@ Decentralized, end-to-end encrypted LAN collaboration toolkit. File sharing, tea
 ## Quick Start
 
 ```bash
-go build -o parade ./cmd/parade/
-./parade daemon --debug
+pixi install          # Install all toolchains (Go / Node / Rust / Python)
+pixi run daemon       # Build and start daemon (--debug mode)
 ```
 
-Requires Go 1.26+. No CGO, no external dependencies.
+Environment managed entirely by [pixi](https://pixi.sh) — no manual toolchain installation needed.
 
 ## Features
 
@@ -189,14 +189,17 @@ Protocol: `/parade/merklesync/1.0.0` (6 message types, 30s timeout)
 ## Development
 
 ```bash
-go build ./...                       # Build all packages
-go test ./...                        # All unit tests
-go test -v -count=1 ./internal/core/sync/...  # Sync tests
-go test -bench=. ./internal/core/sync/...     # Benchmarks
-./tests/test_all.sh                  # Full test suite
+pixi run build              # Build daemon binary
+pixi run build-all          # Build all packages
+pixi run build-release      # Build production release (deb/dmg/msi)
+pixi run test               # All unit tests
+pixi run test-sync          # Sync tests (41 tests)
+pixi run test-sync-bench    # Sync benchmarks
+pixi run test-all           # Full test suite (30 tests, 6 phases)
+pixi run clean              # Clean build artifacts
 ```
 
-No Makefile. Standard Go toolchain only.
+All toolchains (Go, Node, Rust, Python) managed by pixi. Run `pixi task list` for all available tasks.
 
 ## Known Issues
 
@@ -205,7 +208,11 @@ No Makefile. Standard Go toolchain only.
 ## Frontend Development
 
 ```bash
-cd frontend && npm run dev             # Start frontend dev server
-cd frontend && npm run build           # Production build
+pixi run frontend-install     # Install frontend dependencies
+pixi run frontend-dev         # Start frontend dev server
+pixi run frontend-build       # Production build (vue-tsc + vite)
+pixi run frontend-typecheck   # TypeScript type check
+pixi run frontend-test        # E2E tests
+```
 cd frontend/src-tauri && cargo check   # Check Rust code
 ```
