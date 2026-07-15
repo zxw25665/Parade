@@ -58,6 +58,13 @@ daemon-headless = { cmd = "./parade daemon --headless --debug", depends-on = ["b
 # ---- Dev (daemon + frontend together) ----
 dev = { cmd = "./scripts/dev.sh", depends-on = ["build", "frontend-install"] }
 
+# =============================================================================
+# Windows-specific overrides
+# =============================================================================
+
+[target.win-64.tasks]
+dev = { cmd = "scripts\\dev.bat", depends-on = ["build", "frontend-install"] }
+
 # ---- Frontend ----
 frontend-install = { cmd = "pnpm install", cwd = "frontend" }
 frontend-dev = { cmd = "pnpm run dev", cwd = "frontend", depends-on = ["frontend-install"] }
