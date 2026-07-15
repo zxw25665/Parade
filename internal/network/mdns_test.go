@@ -28,13 +28,13 @@ func TestMDNS_Discovery(t *testing.T) {
 		priv2[i] = byte(i + 100)
 	}
 
-	host1, err := NewLibp2pHost(priv1, 0, nil, nil, nil)
+	host1, err := NewLibp2pHost(priv1, 0, "0.0.0.0", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create host1: %v", err)
 	}
 	defer host1.Close()
 
-	host2, err := NewLibp2pHost(priv2, 0, nil, nil, nil)
+	host2, err := NewLibp2pHost(priv2, 0, "0.0.0.0", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create host2: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestMDNS_StartStop(t *testing.T) {
 	}
 
 	priv := make([]byte, 32)
-	host, err := NewLibp2pHost(priv, 0, nil, nil, nil)
+	host, err := NewLibp2pHost(priv, 0, "0.0.0.0", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create host: %v", err)
 	}

@@ -62,14 +62,17 @@ type libp2pHost struct {
 	closed  bool
 }
 
-func NewLibp2pHost(curvePriv []byte, port int, bus eventbus.EventBus, cry crypto.Engine, logr logger.Logger) (*libp2pHost, error) {
+func NewLibp2pHost(curvePriv []byte, port int, listenAddr string, bus eventbus.EventBus, cry crypto.Engine, logr logger.Logger) (*libp2pHost, error) {
 	priv, err := deriveLibp2pKey(curvePriv)
 	if err != nil {
 		return nil, fmt.Errorf("NewLibp2pHost: %w", err)
 	}
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0"
+	}
 	h, err := libp2p.New(
 		libp2p.Identity(priv),
-		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)),
+		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/%s/tcp/%d", listenAddr, port)),
 		libp2p.Transport(tcp.NewTCPTransport),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),

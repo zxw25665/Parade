@@ -845,6 +845,11 @@ func (db *sqliteDB) GetMerkleNodesByParent(ctx context.Context, convID, parentPa
 	return scanMerkleNodes(rows)
 }
 
+func (db *sqliteDB) DeleteMerkleNodesByParent(ctx context.Context, convID, parentPath string) error {
+	_, err := db.conn.ExecContext(ctx, `DELETE FROM merkle_tree_nodes WHERE conv_id = ? AND bucket_path LIKE ?||'%'`, convID, parentPath)
+	return err
+}
+
 func (db *sqliteDB) DeleteMerkleNodesByConv(ctx context.Context, convID string) error {
 	_, err := db.conn.ExecContext(ctx, `DELETE FROM merkle_tree_nodes WHERE conv_id = ?`, convID)
 	return err

@@ -13,6 +13,7 @@ import (
 type FreezeDB interface {
 	GetMerkleNode(ctx context.Context, convID, bucketPath string) (*db.MerkleNode, error)
 	GetMerkleNodesByLevel(ctx context.Context, convID string, level int) ([]*db.MerkleNode, error)
+	DeleteMerkleNodesByParent(ctx context.Context, convID, parentPath string) error
 	UpsertMerkleNode(ctx context.Context, node *db.MerkleNode) error
 	GetFrozenState(ctx context.Context, convID string) (*db.FreezeState, error)
 	UpsertFrozenState(ctx context.Context, state *db.FreezeState) error
@@ -47,6 +48,7 @@ func (fm *FreezeManager) Start() {
 		defer close(fm.done)
 
 		_ = fm.CheckAndFreeze()
+		_ = fm.PruneOldBuckets(14 * 24 * time.Hour)
 
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
@@ -57,6 +59,7 @@ func (fm *FreezeManager) Start() {
 				now := time.Now().UTC()
 				if now.Hour() == 0 && now.Minute() < 2 {
 					_ = fm.FreezePreviousDay()
+					_ = fm.PruneOldBuckets(14 * 24 * time.Hour)
 				}
 			case <-fm.stopCh:
 				return
@@ -163,8 +166,8 @@ func (fm *FreezeManager) PruneOldBuckets(olderThan time.Duration) error {
 	return nil
 }
 
-func (fm *FreezeManager) deleteSubtree(ctx context.Context, convID, parentPath string, parentLevel int) error {
-	return nil
+func (fm *FreezeManager) deleteSubtree(ctx context.Context, convID, parentPath string, _ int) error {
+	return fm.db.DeleteMerkleNodesByParent(ctx, convID, parentPath)
 }
 
 // CheckAndFreeze runs on startup to freeze any unfrozen buckets from past days.

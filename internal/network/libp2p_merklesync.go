@@ -121,8 +121,9 @@ func (ms *libp2pMerkleSync) handleStream(stream network.Stream) {
 			ms.log(logger.Warning, "libp2p-merklesync", fmt.Sprintf("unmarshal push messages: %v", err))
 			return
 		}
-		for _, msg := range messages {
-			_ = msg
+		if err := ms.handler.HandlePushMessages(ctx, req.ConvID, messages); err != nil {
+			ms.log(logger.Warning, "libp2p-merklesync", fmt.Sprintf("handle push messages conv=%s: %v", req.ConvID[:8], err))
+			return
 		}
 		resp.Type = "push_messages_ack"
 		resp.ConvID = req.ConvID

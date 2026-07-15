@@ -103,7 +103,9 @@ func Run(args []string) {
 	identityPath := filepath.Join(dataDir, ".parade_identity")
 	appInstance := app.NewApp(eventBus, cry, database, netEngine, fileEngine, ui, logBroker).
 		WithIdentityPath(identityPath).
-		WithMDNSEnabled(cfg.MDNSEnabled)
+		WithMDNSEnabled(cfg.MDNSEnabled).
+		WithNetworkPort(cfg.Port).
+		WithNetworkListenAddr(cfg.ListenAddr)
 	_ = appInstance.LoadPeersConfig(dataDir)
 	appInstance.Startup()
 
