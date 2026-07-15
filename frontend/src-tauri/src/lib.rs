@@ -192,6 +192,8 @@ fn get_daemon_path() -> PathBuf {
     let candidates = [
         exe_dir.join("parade"),
         exe_dir.join("parade.exe"),
+        exe_dir.join("parade-daemon"),
+        exe_dir.join("parade-daemon.exe"),
         PathBuf::from("../../../parade"),
         PathBuf::from("../parade"),
     ];
