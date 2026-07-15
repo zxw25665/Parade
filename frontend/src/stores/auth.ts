@@ -34,14 +34,26 @@ export const useAuthStore = defineStore('auth', () => {
     const r = await waitForRPC()
     loading.value = true
     error.value = null
-    try {
-      hasIdentity.value = await r.checkHasIdentity()
-      return hasIdentity.value
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to check identity'
-      throw e
-    } finally {
-      loading.value = false
+
+    // Poll until daemon is ready (it spawns on a background thread).
+    // Once connected, the call returns immediately on subsequent attempts.
+    const start = Date.now()
+    const daemonTimeout = 30000
+    while (true) {
+      try {
+        hasIdentity.value = await r.checkHasIdentity()
+        loading.value = false
+        return hasIdentity.value
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (msg.includes('Daemon not connected') && (Date.now() - start) < daemonTimeout) {
+          await new Promise(r => setTimeout(r, 500))
+          continue
+        }
+        error.value = msg || 'Failed to check identity'
+        loading.value = false
+        throw e
+      }
     }
   }
 

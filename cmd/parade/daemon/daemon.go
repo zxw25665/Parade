@@ -57,6 +57,30 @@ func Run(args []string) {
 	eventBus := eventbus.New()
 	cry := crypto.NewEngine()
 
+	// Create IPC listener EARLY — before any potentially slow initialization
+	// (database, migrations, file engine). This ensures the named pipe / UDS
+	// socket is available within milliseconds of the daemon process starting,
+	// not seconds later after all engines are initialized.
+	var ui app.Frontend
+	var ipcSrv app.IPCServer
+
+	if !cfg.Headless {
+		udsPath := cfg.UDS
+		if udsPath == "" {
+			udsPath = app.GetDefaultPipePath()
+		}
+		ipcSrv = app.NewIPCServer(udsPath)
+		ui = app.NewUDSFrontend(ipcSrv.Hub(), ipcSrv.EventHub())
+		if err := ipcSrv.Start(); err != nil {
+			log.Fatalf("failed to start IPC listener: %v", err)
+		}
+		defer ipcSrv.Stop()
+		log.Printf("[daemon] IPC listener started on %s", udsPath)
+	} else {
+		log.Println("[daemon] headless mode — no IPC listener")
+		ui = &app.NullUI{}
+	}
+
 	dbPath := filepath.Join(dataDir, ".parade_data.db")
 	database, err := db.NewSQLiteDB(dbPath)
 	if err != nil {
@@ -84,22 +108,6 @@ func Run(args []string) {
 	netEngine.AttachFileEngine(fileEngine)
 	defer netEngine.Stop()
 
-	var ui app.Frontend
-	var ipcSrv app.IPCServer
-
-	if !cfg.Headless {
-		udsPath := cfg.UDS
-		if udsPath == "" {
-			udsPath = app.GetDefaultPipePath()
-		}
-		ipcSrv = app.NewIPCServer(udsPath)
-		log.Printf("[daemon] using IPC: %s", udsPath)
-		ui = app.NewUDSFrontend(ipcSrv.Hub(), ipcSrv.EventHub())
-	} else {
-		log.Println("[daemon] headless mode — no IPC listener")
-		ui = &app.NullUI{}
-	}
-
 	identityPath := filepath.Join(dataDir, ".parade_identity")
 	appInstance := app.NewApp(eventBus, cry, database, netEngine, fileEngine, ui, logBroker).
 		WithIdentityPath(identityPath).
@@ -111,10 +119,6 @@ func Run(args []string) {
 
 	if ipcSrv != nil {
 		app.RegisterMethods(appInstance)
-		if err := ipcSrv.Start(); err != nil {
-			log.Fatalf("failed to start IPC listener: %v", err)
-		}
-		defer ipcSrv.Stop()
 	}
 
 	log.Printf("[daemon] Parade %s started (pid=%d, data=%s, p2p=%s:%d, uds=%s, headless=%v, debug=%v, production=%v, mdns=%v)",

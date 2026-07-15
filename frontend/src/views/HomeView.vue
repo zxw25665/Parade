@@ -11,26 +11,14 @@ const loading = ref(true)
 const error = ref('')
 
 let unlistenDaemonError: (() => void) | null = null
+let unlistenDaemonReady: (() => void) | null = null
 
-const CONNECT_TIMEOUT_MS = 15000
+const DAEMON_TIMEOUT_MS = 35000
 
-onMounted(async () => {
-  // Listen for daemon error events pushed by the Rust backend
-  listen<string>('daemon_error', (event) => {
-    error.value = event.payload
-    loading.value = false
-  }).then(fn => { unlistenDaemonError = fn })
-
+async function attemptConnect() {
   try {
-    // Race checkIdentity against a hard timeout so the UI never
-    // hangs at "Connecting to Parade..." indefinitely
-    await Promise.race([
-      authStore.checkIdentity(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timed out — daemon not responding')), CONNECT_TIMEOUT_MS)
-      )
-    ])
-    
+    await authStore.checkIdentity()
+
     if (authStore.isLoggedIn && authStore.currentTeam) {
       router.replace('/chat')
     } else if (authStore.hasIdentity) {
@@ -43,10 +31,35 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+}
+
+onMounted(async () => {
+  // Listen for daemon events pushed by the Rust backend
+  listen<string>('daemon_error', (event) => {
+    error.value = event.payload
+    loading.value = false
+  }).then(fn => { unlistenDaemonError = fn })
+
+  listen<void>('daemon_ready', () => {
+    attemptConnect()
+  }).then(fn => { unlistenDaemonReady = fn })
+
+  await attemptConnect()
+
+  // Hard timeout fallback
+  if (loading.value) {
+    setTimeout(() => {
+      if (loading.value) {
+        error.value = 'Daemon did not start in time'
+        loading.value = false
+      }
+    }, DAEMON_TIMEOUT_MS)
+  }
 })
 
 onUnmounted(() => {
   unlistenDaemonError?.()
+  unlistenDaemonReady?.()
 })
 
 const statusMessage = computed(() => {
