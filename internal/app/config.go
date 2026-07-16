@@ -11,7 +11,6 @@ import (
 
 type DaemonConfig struct {
 	DataDir string `toml:"data_dir"`
-	UDS     string `toml:"uds"`
 	Port    int    `toml:"port"`
 	Listen  string `toml:"listen"`
 
@@ -46,23 +45,21 @@ type ConfigFile struct {
 }
 
 type Config struct {
-	UDS            string
-	DataDir        string
-	Port           int
-	ListenAddr     string
-	Headless       bool
-	Debug          bool
-	Production     bool
-	MDNSEnabled    bool
-	AutoReconnect  bool
-	LogLevel       string
-	LogFile        string
-	SavedPeers     []string
+	DataDir       string
+	Port          int
+	ListenAddr    string
+	Headless      bool
+	Debug         bool
+	Production    bool
+	MDNSEnabled   bool
+	AutoReconnect bool
+	LogLevel      string
+	LogFile       string
+	SavedPeers    []string
 }
 
 func DefaultConfig() Config {
 	return Config{
-		UDS:           "/tmp/parade.sock",
 		Port:          4327,
 		ListenAddr:    "127.0.0.1",
 		Headless:      false,
@@ -146,9 +143,6 @@ func ApplyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("PARADE_DATA_DIR"); v != "" {
 		cfg.DataDir = v
 	}
-	if v := os.Getenv("PARADE_UDS"); v != "" {
-		cfg.UDS = v
-	}
 	if v := os.Getenv("PARADE_PORT"); v != "" {
 		var port int
 		if _, err := parsePositiveInt(v, &port); err == nil {
@@ -187,9 +181,6 @@ func FromConfigFile(cfgFile *ConfigFile) Config {
 	d := cfgFile.Daemon
 	if d.DataDir != "" {
 		cfg.DataDir = d.DataDir
-	}
-	if d.UDS != "" {
-		cfg.UDS = d.UDS
 	}
 	if d.Port != 0 {
 		cfg.Port = d.Port
@@ -230,9 +221,6 @@ func FromConfigFile(cfgFile *ConfigFile) Config {
 }
 
 func MergeWithCLI(cfg Config, cli *DaemonCLIConfig) Config {
-	if cli.UDS != "" {
-		cfg.UDS = cli.UDS
-	}
 	if cli.DataDir != "" {
 		cfg.DataDir = cli.DataDir
 	}
@@ -258,17 +246,16 @@ func MergeWithCLI(cfg Config, cli *DaemonCLIConfig) Config {
 }
 
 type DaemonCLIConfig struct {
-	UDS           string
-	DataDir       string
-	Port          int
-	ListenAddr    string
-	Headless      bool
-	HeadlessSet   bool
-	Debug         bool
-	DebugSet      bool
-	Production    bool
-	ProductionSet bool
-	MDNSEnabled   bool
+	DataDir        string
+	Port           int
+	ListenAddr     string
+	Headless       bool
+	HeadlessSet    bool
+	Debug          bool
+	DebugSet       bool
+	Production     bool
+	ProductionSet  bool
+	MDNSEnabled    bool
 	MDNSEnabledSet bool
 }
 
