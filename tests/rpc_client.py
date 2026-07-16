@@ -1,38 +1,41 @@
 #!/usr/bin/env python3
-import json, socket, select, sys, time
+"""
+DEPRECATED: This client previously connected via Unix Domain Socket.
+After the stdio refactor, the daemon uses stdin/stdout for IPC.
+Use a pipe-based approach instead.
 
-uds = sys.argv[1]
-method = sys.argv[2]
-params = sys.argv[3] if len(sys.argv) > 3 else 'null'
+Example:
+  echo '{"jsonrpc":"2.0","id":1,"method":"GetPubKey","params":null}' | parade daemon
+"""
 
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.settimeout(5)
-s.connect(uds)
-req = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': json.loads(params)}) + '\n'
-s.sendall(req.encode())
+import json, subprocess, sys
 
-buf = b''
-deadline = time.time() + 5
-while time.time() < deadline:
-    r, _, _ = select.select([s], [], [], 0.5)
-    if r:
-        chunk = s.recv(65536)
-        if not chunk:
-            break
-        buf += chunk
-    lines = buf.split(b'\n')
-    for line in lines[:-1]:
-        if not line.strip():
-            continue
-        try:
-            obj = json.loads(line)
-            if obj.get('id') == 1:
-                print(json.dumps(obj))
-                s.close()
-                sys.exit(0)
-        except json.JSONDecodeError:
-            pass
-    buf = lines[-1]
-s.close()
-print(json.dumps({'error': {'message': 'timeout'}}))
+method = sys.argv[1]
+params = sys.argv[2] if len(sys.argv) > 2 else 'null'
+
+req = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': json.loads(params)})
+
+proc = subprocess.Popen(
+    ['parade', 'daemon'],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+)
+
+stdout, stderr = proc.communicate(input=req + '\n', timeout=10)
+
+for line in stdout.split('\n'):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+        if obj.get('id') == 1:
+            print(json.dumps(obj))
+            sys.exit(0)
+    except json.JSONDecodeError:
+        pass
+
+print(json.dumps({'error': {'message': 'no response'}}))
 sys.exit(1)

@@ -1,20 +1,19 @@
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, ChildStderr, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
 
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
 use tauri::RunEvent;
 use tauri::Emitter;
 use tracing::{error, info};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-static DAEMON_HANDLE: Lazy<Arc<Mutex<Option<std::process::Child>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(None)));
-
-static UDS_CLIENT: Lazy<Arc<Mutex<Option<UDSConnection>>>> =
+static DAEMON_BRIDGE: Lazy<Arc<Mutex<Option<DaemonBridge>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
 
 static APP_HANDLE: Lazy<Arc<Mutex<Option<tauri::AppHandle>>>> =
@@ -23,183 +22,162 @@ static APP_HANDLE: Lazy<Arc<Mutex<Option<tauri::AppHandle>>>> =
 static LAST_DAEMON_ERROR: Lazy<Mutex<Option<String>>> =
     Lazy::new(|| Mutex::new(None));
 
-static EVENT_READER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcRequest {
-    pub jsonrpc: String,
-    pub id: Option<serde_json::Value>,
-    pub method: String,
-    #[serde(default)]
-    pub params: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcResponse {
-    pub jsonrpc: String,
-    #[serde(default)]
-    pub id: serde_json::Value,
-    #[serde(default)]
-    pub result: Option<serde_json::Value>,
-    #[serde(default)]
-    pub error: Option<RpcError>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RpcError {
-    pub code: i32,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventPayload {
-    pub event: String,
-    pub data: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcEvent {
-    #[allow(dead_code)]
-    jsonrpc: String,
-    #[allow(dead_code)]
-    method: String,
-    params: EventPayload,
-}
-
-#[cfg(unix)]
-mod uds {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-
-    pub struct UDSConnection {
-        socket_path: PathBuf,
-    }
-
-    impl UDSConnection {
-        pub fn new(socket_path: PathBuf) -> Result<Self, anyhow::Error> {
-            Ok(Self { socket_path })
-        }
-
-        pub fn connect_stream(&self) -> Result<UnixStream, anyhow::Error> {
-            let stream = UnixStream::connect(&self.socket_path)?;
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
-            stream.set_write_timeout(Some(std::time::Duration::from_secs(30)))?;
-            Ok(stream)
-        }
-
-        pub fn call(&self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, anyhow::Error> {
-            let mut stream = self.connect_stream()?;
-
-            let req = JsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: Some(serde_json::json!(1)),
-                method: method.to_string(),
-                params,
-            };
-
-            let req_json = serde_json::to_string(&req)?;
-            stream.write_all(format!("{}\n", req_json).as_bytes())?;
-            stream.flush()?;
-
-            let mut buf = vec![0u8; 65536];
-            let n = stream.read(&mut buf)?;
-            buf.truncate(n);
-
-            let resp: JsonRpcResponse = serde_json::from_slice(&buf)?;
-            if let Some(err) = resp.error {
-                return Err(anyhow::anyhow!("RPC error {}: {}", err.code, err.message));
-            }
-            Ok(resp.result.unwrap_or(serde_json::Value::Null))
-        }
-    }
-}
-
 #[cfg(windows)]
-mod uds {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::os::windows::ffi::OsStrExt;
+#[allow(dead_code)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    pub struct UDSConnection {
-        pipe_name: String,
-    }
+type PendingCall = std::sync::mpsc::Sender<Result<serde_json::Value, String>>;
 
-    impl UDSConnection {
-        pub fn new(socket_path: PathBuf) -> Result<Self, anyhow::Error> {
-            let pipe_name = socket_path.to_string_lossy().to_string();
-            Ok(Self { pipe_name })
-        }
+pub struct DaemonBridge {
+    stdin: Arc<Mutex<ChildStdin>>,
+    pending: Arc<Mutex<HashMap<u64, PendingCall>>>,
+    next_id: AtomicU64,
+    child: Mutex<Option<Child>>,
+}
 
-        pub fn connect_stream(&self) -> Result<std::fs::File, anyhow::Error> {
-            let pipe_path = format!("\\\\.\\pipe\\{}", self.pipe_name);
+impl DaemonBridge {
+    pub fn new(
+        child: Child,
+        stdin: ChildStdin,
+        stdout: ChildStdout,
+        stderr: ChildStderr,
+        app_handle: tauri::AppHandle,
+    ) -> Result<Self, anyhow::Error> {
+        let stdin = Arc::new(Mutex::new(stdin));
+        let pending: Arc<Mutex<HashMap<u64, PendingCall>>> = Arc::new(Mutex::new(HashMap::new()));
 
-            // Use WaitNamedPipeW to poll with a timeout before opening.
-            // On Windows, CreateFileW (used by std::fs::File::open) blocks
-            // indefinitely when no pipe server is listening — unlike Unix
-            // where connect() returns immediately with an error. This call
-            // ensures the polling loop in spawn_daemon() can retry or timeout.
-            let pipe_path_wide: Vec<u16> = std::ffi::OsStr::new(&pipe_path)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-
-            let timeout_ms: u32 = 500;
-            unsafe {
-                let available = winapi::um::namedpipeapi::WaitNamedPipeW(
-                    pipe_path_wide.as_ptr(),
-                    timeout_ms,
-                );
-                if available == 0 {
-                    let err = std::io::Error::last_os_error();
-                    return Err(anyhow::anyhow!(
-                        "Named pipe {} not available within {}ms: {}",
-                        pipe_path, timeout_ms, err
-                    ));
+        // Spawn stdout reader thread
+        let pending_clone = pending.clone();
+        let app_handle_clone = app_handle.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        let line = line.trim().to_string();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(value) => {
+                                // Check if it's an event (method == "event")
+                                if value.get("method").and_then(|m| m.as_str()) == Some("event") {
+                                    if let Some(params) = value.get("params") {
+                                        let event_name = params.get("event")
+                                            .and_then(|e| e.as_str())
+                                            .unwrap_or("");
+                                        let data = params.get("data")
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null);
+                                        let _ = app_handle_clone.emit(event_name, data);
+                                    }
+                                } else if let Some(id) = value.get("id") {
+                                    // It's a response — route to pending call
+                                    if let Some(id_num) = id.as_u64() {
+                                        let mut pending_lock = pending_clone.lock().unwrap();
+                                        if let Some(sender) = pending_lock.remove(&id_num) {
+                                            if let Some(err) = value.get("error") {
+                                                let msg = err.get("message")
+                                                    .and_then(|m| m.as_str())
+                                                    .unwrap_or("Unknown error");
+                                                let _ = sender.send(Err(msg.to_string()));
+                                            } else {
+                                                let result = value.get("result")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                let _ = sender.send(Ok(result));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("[daemon] Failed to parse stdout line: {} — line: {}", e, line);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("[daemon] Stdout reader error: {}", e);
+                        break;
+                    }
                 }
             }
+            tracing::info!("[daemon] Stdout reader loop exited");
+        });
 
-            // Pipe is available — open will complete immediately
-            let pipe = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&pipe_path)
-                .map_err(|e| anyhow::anyhow!("Failed to open pipe {}: {}", pipe_path, e))?;
-            Ok(pipe)
+        // Spawn stderr forwarder thread
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        let line = line.trim().to_string();
+                        if !line.is_empty() {
+                            tracing::warn!("[daemon] {}", line);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            stdin,
+            pending,
+            next_id: AtomicU64::new(1),
+            child: Mutex::new(Some(child)),
+        })
+    }
+
+    pub fn call(&self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, anyhow::Error> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        {
+            let mut pending_lock = self.pending.lock().unwrap();
+            pending_lock.insert(id, tx);
         }
 
-        pub fn call(&self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, anyhow::Error> {
-            let mut pipe = self.connect_stream()?;
+        {
+            let mut stdin_lock = self.stdin.lock().unwrap();
+            let req_str = serde_json::to_string(&request)?;
+            stdin_lock.write_all(req_str.as_bytes())?;
+            stdin_lock.write_all(b"\n")?;
+            stdin_lock.flush()?;
+        }
 
-            let req = JsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: Some(serde_json::json!(1)),
-                method: method.to_string(),
-                params,
-            };
-
-            let req_json = serde_json::to_string(&req)?;
-            pipe.write_all(format!("{}\n", req_json).as_bytes())?;
-            pipe.flush()?;
-
-            let mut buf = vec![0u8; 65536];
-            let n = pipe.read(&mut buf)?;
-            buf.truncate(n);
-
-            let resp: JsonRpcResponse = serde_json::from_slice(&buf)?;
-            if let Some(err) = resp.error {
-                return Err(anyhow::anyhow!("RPC error {}: {}", err.code, err.message));
+        // Wait for response (30s timeout)
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(result) => result.map_err(|e| anyhow::anyhow!("{}", e)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Clean up pending entry
+                let mut pending_lock = self.pending.lock().unwrap();
+                pending_lock.remove(&id);
+                Err(anyhow::anyhow!("RPC call '{}' timed out after 30s", method))
             }
-            Ok(resp.result.unwrap_or(serde_json::Value::Null))
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(anyhow::anyhow!("Daemon connection lost"))
+            }
+        }
+    }
+
+    pub fn shutdown(&self) {
+        if let Ok(mut child_opt) = self.child.lock() {
+            if let Some(mut child) = child_opt.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
-
-#[cfg(unix)]
-use uds::UDSConnection;
-
-#[cfg(windows)]
-use uds::UDSConnection;
 
 fn get_data_dir() -> PathBuf {
     // 1. Explicit env var override
@@ -270,17 +248,6 @@ fn get_daemon_path() -> PathBuf {
     PathBuf::from("parade")
 }
 
-fn get_uds_path() -> PathBuf {
-    #[cfg(unix)]
-    {
-        PathBuf::from("/tmp/parade.sock")
-    }
-    #[cfg(windows)]
-    {
-        PathBuf::from("parade")
-    }
-}
-
 fn setup_logging() {
     let log_dir = get_data_dir().join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
@@ -301,208 +268,65 @@ fn setup_logging() {
         .init();
 }
 
-fn spawn_daemon() -> Result<(), anyhow::Error> {
+fn spawn_daemon() -> Result<DaemonBridge, anyhow::Error> {
     let daemon_path = get_daemon_path();
     let data_dir = get_data_dir();
-    let uds_path = get_uds_path();
+    let data_dir_str = data_dir.to_string_lossy().to_string();
 
-    info!("Spawning daemon: {:?} with data-dir: {:?}, uds: {:?}", daemon_path, data_dir, uds_path);
+    info!("Spawning daemon: {:?} with data-dir: {:?}", daemon_path, data_dir);
 
     let args = vec![
         "daemon".to_string(),
         "--data-dir".to_string(),
-        data_dir.to_string_lossy().to_string(),
-        "--uds".to_string(),
-        uds_path.to_string_lossy().to_string(),
+        data_dir_str,
     ];
 
-    #[cfg(unix)]
-    {
-        let child = Command::new(&daemon_path)
-            .args(&args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-
-        let mut handle = DAEMON_HANDLE.lock().unwrap();
-        *handle = Some(child);
-    }
+    let mut cmd = Command::new(&daemon_path);
+    cmd.args(&args);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        let child = Command::new(&daemon_path)
-            .args(&args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
-
-        let mut handle = DAEMON_HANDLE.lock().unwrap();
-        *handle = Some(child);
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let client = UDSConnection::new(uds_path)?;
+    let mut child = cmd.spawn()?;
 
-    // Poll the daemon's IPC endpoint until it accepts connections (up to 60s)
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(60);
-    loop {
-        match client.connect_stream() {
-            Ok(_) => {
-                info!("Daemon IPC ready after {:?}", start.elapsed());
-                break;
-            }
-            Err(e) => {
-                if start.elapsed() >= timeout {
-                    return Err(anyhow::anyhow!(
-                        "Daemon IPC not ready after {:?}: {}",
-                        timeout, e
-                    ));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-        }
-    }
+    let stdin = child.stdin.take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get daemon stdin"))?;
+    let stdout = child.stdout.take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get daemon stdout"))?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get daemon stderr"))?;
 
-    let mut conn = UDS_CLIENT.lock().unwrap();
-    *conn = Some(client);
+    let app_handle = APP_HANDLE.lock().unwrap()
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("APP_HANDLE not set"))?;
+
+    let bridge = DaemonBridge::new(child, stdin, stdout, stderr, app_handle)?;
 
     info!("Daemon spawned successfully");
-    Ok(())
+    Ok(bridge)
 }
 
 fn shutdown_daemon() {
     info!("Shutting down daemon...");
 
-    {
-        let mut conn = UDS_CLIENT.lock().unwrap();
-        *conn = None;
-    }
-
-    if let Ok(mut handle) = DAEMON_HANDLE.lock() {
-        if let Some(mut child) = handle.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    if let Ok(mut bridge_lock) = DAEMON_BRIDGE.lock() {
+        if let Some(bridge) = bridge_lock.take() {
+            bridge.shutdown();
         }
     }
-}
-
-#[cfg(unix)]
-fn start_event_reader(uds_path: PathBuf, app_handle: tauri::AppHandle) {
-    use std::io::{BufRead, BufReader};
-    use std::os::unix::net::UnixStream;
-
-    std::thread::spawn(move || {
-        let mut backoff_ms: u64 = 500;
-        let max_backoff_ms: u64 = 30000;
-
-        while !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
-            match UnixStream::connect(&uds_path) {
-                Ok(stream) => {
-                    stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                        .ok();
-                    let reader = BufReader::new(stream);
-                    backoff_ms = 500;
-
-                    for line in reader.lines() {
-                        if EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        match line {
-                            Ok(line) => {
-                                let line = line.trim();
-                                if line.is_empty() {
-                                    continue;
-                                }
-                                if let Ok(event) = serde_json::from_str::<JsonRpcEvent>(line) {
-                                    let _ = app_handle.emit(
-                                        &event.params.event,
-                                        event.params.data.unwrap_or(serde_json::Value::Null),
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                error!("Event reader read error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Event reader connect error: {}", e);
-                }
-            }
-
-            if !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
-                backoff_ms = std::cmp::min(backoff_ms * 2, max_backoff_ms);
-            }
-        }
-    });
-}
-
-#[cfg(windows)]
-fn start_event_reader(pipe_name: String, app_handle: tauri::AppHandle) {
-    use std::io::{BufRead, BufReader};
-
-    std::thread::spawn(move || {
-        let mut backoff_ms: u64 = 500;
-        let max_backoff_ms: u64 = 30000;
-
-        while !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
-            let pipe_path = format!("\\\\.\\pipe\\{}", pipe_name);
-
-            match std::fs::OpenOptions::new().read(true).open(&pipe_path) {
-                Ok(pipe) => {
-                    let reader = BufReader::new(pipe);
-                    backoff_ms = 500;
-
-                    for line in reader.lines() {
-                        if EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        match line {
-                            Ok(line) => {
-                                let line = line.trim();
-                                if line.is_empty() {
-                                    continue;
-                                }
-                                if let Ok(event) = serde_json::from_str::<JsonRpcEvent>(line) {
-                                    let _ = app_handle.emit(
-                                        &event.params.event,
-                                        event.params.data.unwrap_or(serde_json::Value::Null),
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                error!("Event reader read error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Event reader connect error: {}", e);
-                }
-            }
-
-            if !EVENT_READER_SHUTDOWN.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
-                backoff_ms = std::cmp::min(backoff_ms * 2, max_backoff_ms);
-            }
-        }
-    });
 }
 
 #[tauri::command]
 fn on_foreground() -> Result<(), String> {
-    let conn = UDS_CLIENT.lock().map_err(|e| e.to_string())?;
-    let client = conn.as_ref().ok_or("Daemon not connected")?;
-    client
+    let bridge_lock = DAEMON_BRIDGE.lock().map_err(|e| e.to_string())?;
+    let bridge = bridge_lock.as_ref().ok_or("Daemon not connected")?;
+    bridge
         .call("OnForeground", None)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -520,26 +344,9 @@ fn get_daemon_error() -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn call_daemon(method: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    // Fast path: use existing connection
-    {
-        let conn = UDS_CLIENT.lock().map_err(|e| e.to_string())?;
-        if let Some(client) = conn.as_ref() {
-            return client.call(&method, params).map_err(|e| e.to_string());
-        }
-    }
-
-    // Slow path: daemon may already be running (e.g. leftover from
-    // previous session, or the background spawn thread hasn't finished).
-    // Try a direct connection and cache it for future calls.
-    let uds_path = get_uds_path();
-    let client = UDSConnection::new(uds_path).map_err(|e| e.to_string())?;
-    let result = client.call(&method, params).map_err(|e| e.to_string())?;
-
-    if let Ok(mut conn) = UDS_CLIENT.lock() {
-        *conn = Some(client);
-    }
-
-    Ok(result)
+    let bridge_lock = DAEMON_BRIDGE.lock().map_err(|e| e.to_string())?;
+    let bridge = bridge_lock.as_ref().ok_or("Daemon not connected")?;
+    bridge.call(&method, params).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -551,6 +358,12 @@ fn register(password: String) -> Result<(), String> {
 #[tauri::command]
 fn login(password: String) -> Result<(), String> {
     call_daemon("Login".to_string(), Some(serde_json::json!([password])))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn logout() -> Result<(), String> {
+    call_daemon("Logout".to_string(), None)?;
     Ok(())
 }
 
@@ -777,39 +590,21 @@ pub fn run() {
         .setup(|app| {
             info!("Setting up Tauri app...");
 
-            // Spawn daemon on a background thread — do NOT block the UI.
-            // The synchronous polling loop in spawn_daemon() can take several
-            // seconds while the daemon initializes; running it in setup() would
-            // block the main thread and cause Windows to mark the app as
-            // "Not Responding".
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                match spawn_daemon() {
-                    Ok(()) => {
-                        *APP_HANDLE.lock().unwrap() = Some(handle.clone());
+            // Set APP_HANDLE before spawning daemon
+            *APP_HANDLE.lock().unwrap() = Some(app.handle().clone());
 
-                        #[cfg(unix)]
-                        {
-                            let uds_path = get_uds_path();
-                            start_event_reader(uds_path, handle.clone());
-                        }
-
-                        #[cfg(windows)]
-                        {
-                            let pipe_name = get_uds_path().to_string_lossy().to_string();
-                            start_event_reader(format!("{}_events", pipe_name), handle.clone());
-                        }
-
-                        let _ = handle.emit("daemon_ready", ());
-                    }
-                    Err(e) => {
-                        let err_msg = e.to_string();
-                        error!("Failed to spawn daemon: {}", err_msg);
-                        *LAST_DAEMON_ERROR.lock().unwrap() = Some(err_msg.clone());
-                        let _ = handle.emit("daemon_error", err_msg);
-                    }
+            match spawn_daemon() {
+                Ok(bridge) => {
+                    *DAEMON_BRIDGE.lock().unwrap() = Some(bridge);
+                    let _ = app.handle().emit("daemon_ready", ());
                 }
-            });
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    error!("Failed to spawn daemon: {}", err_msg);
+                    *LAST_DAEMON_ERROR.lock().unwrap() = Some(err_msg.clone());
+                    let _ = app.handle().emit("daemon_error", err_msg);
+                }
+            }
 
             Ok(())
         })
@@ -824,6 +619,7 @@ pub fn run() {
             get_daemon_error,
             register,
             login,
+            logout,
             check_has_identity,
             join_team,
             join_team_with_name,
@@ -864,7 +660,6 @@ pub fn run() {
         .run(|app_handle, event| {
             if let RunEvent::ExitRequested { api, code, .. } = event {
                 if code == Some(0) {
-                    EVENT_READER_SHUTDOWN.store(true, Ordering::SeqCst);
                     shutdown_daemon();
                     app_handle.exit(0);
                 }
