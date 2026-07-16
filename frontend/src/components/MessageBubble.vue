@@ -9,6 +9,7 @@ const props = defineProps<{
 }>()
 
 const copied = ref(false)
+const copyError = ref(false)
 
 const formattedTime = computed(() => {
   const date = new Date(props.message.timestamp)
@@ -33,13 +34,17 @@ const senderName = computed(() => {
 
 async function copyContent() {
   try {
+    copyError.value = false
     await navigator.clipboard.writeText(props.message.content)
     copied.value = true
     setTimeout(() => {
       copied.value = false
     }, 2000)
   } catch (err) {
-    console.error('Failed to copy:', err)
+    copyError.value = true
+    setTimeout(() => {
+      copyError.value = false
+    }, 2000)
   }
 }
 </script>
@@ -63,15 +68,20 @@ async function copyContent() {
         <div class="message-actions">
           <button 
             class="action-btn"
+            :class="{ 'copy-error': copyError }"
             @click="copyContent"
-            :title="copied ? 'Copied!' : 'Copy'"
+            :title="copyError ? 'Copy failed' : copied ? 'Copied!' : 'Copy'"
           >
-            <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-if="!copied && !copyError" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
               <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
             </svg>
-            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-else-if="copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
           </button>
         </div>
@@ -195,6 +205,12 @@ async function copyContent() {
   background: var(--bg-overlay);
   color: var(--text-primary);
   border-color: var(--border-hover);
+}
+
+.action-btn.copy-error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
 }
 
 /* Message Meta */

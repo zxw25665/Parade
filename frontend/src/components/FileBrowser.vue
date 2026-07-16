@@ -21,6 +21,9 @@ const emit = defineEmits<{
 const filesStore = useFilesStore()
 const peersStore = usePeersStore()
 
+// Error state
+const fileBrowserError = ref<string | null>(null)
+
 // Tab state
 const activeTab = ref<'local' | 'remote'>(props.defaultTab)
 
@@ -56,7 +59,8 @@ onMounted(async () => {
   // Get default download directory
   try {
     downloadDir.value = await filesStore.getDefaultDownloadDir()
-  } catch {
+  } catch (e) {
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to get download directory'
     downloadDir.value = '/tmp'
   }
 
@@ -82,24 +86,26 @@ watch(selectedPeerUUID, async (uuid) => {
 
 // Local browsing functions
 async function browseLocalRoot(): Promise<void> {
+  fileBrowserError.value = null
   localPath.value = '/'
   localEntries.value = []
   try {
     const entries = await filesStore.getLocalDirectoryChildren('/')
     localEntries.value = entries
   } catch (e) {
-    console.error('Failed to browse local:', e)
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to browse local files'
     localEntries.value = []
   }
 }
 
 async function navigateLocal(path: string): Promise<void> {
+  fileBrowserError.value = null
   try {
     const entries = await filesStore.getLocalDirectoryChildren(path)
     localEntries.value = entries
     localPath.value = path
   } catch (e) {
-    console.error('Failed to navigate local:', e)
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to navigate directory'
     localEntries.value = []
   }
 }
@@ -115,25 +121,27 @@ async function goLocalBack(): Promise<void> {
 // Remote browsing functions
 async function browseRemoteRoot(): Promise<void> {
   if (!selectedPeerUUID.value) return
+  fileBrowserError.value = null
   remotePath.value = '/'
   remoteEntries.value = []
   try {
     const entries = await filesStore.getRemoteDirectoryChildren(selectedPeerUUID.value, '/')
     remoteEntries.value = entries
   } catch (e) {
-    console.error('Failed to browse remote:', e)
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to browse remote files'
     remoteEntries.value = []
   }
 }
 
 async function navigateRemote(path: string): Promise<void> {
   if (!selectedPeerUUID.value) return
+  fileBrowserError.value = null
   try {
     const entries = await filesStore.getRemoteDirectoryChildren(selectedPeerUUID.value, path)
     remoteEntries.value = entries
     remotePath.value = path
   } catch (e) {
-    console.error('Failed to navigate remote:', e)
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to navigate remote directory'
     remoteEntries.value = []
   }
 }
@@ -154,13 +162,14 @@ function handleDownload(entry: FileEntry): void {
 
 async function startDownload(): Promise<void> {
   if (!downloadTarget.value || !selectedPeerUUID.value || !savePath.value) return
+  fileBrowserError.value = null
 
   try {
     await filesStore.startDownload(selectedPeerUUID.value, downloadTarget.value.path, savePath.value)
     downloadTarget.value = null
     savePath.value = ''
   } catch (e) {
-    console.error('Failed to start download:', e)
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to start download'
   }
 }
 
@@ -171,23 +180,25 @@ function cancelDownload(): void {
 
 // Share directory handling
 async function handleShareDirectory(path: string): Promise<void> {
+  fileBrowserError.value = null
   try {
     await filesStore.shareDirectory(path)
     showShareModal.value = false
     // Refresh local directory
     await navigateLocal(localPath.value)
   } catch (e) {
-    console.error('Failed to share directory:', e)
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to share directory'
   }
 }
 
 async function handleUnshareDirectory(path: string): Promise<void> {
+  fileBrowserError.value = null
   try {
     await filesStore.unshareDirectory(path)
     // Refresh local directory
     await navigateLocal(localPath.value)
   } catch (e) {
-    console.error('Failed to unshare directory:', e)
+    fileBrowserError.value = e instanceof Error ? e.message : 'Failed to unshare directory'
   }
 }
 
@@ -199,6 +210,17 @@ function isShared(path: string): boolean {
 
 <template>
   <div class="file-browser">
+    <!-- Error Banner -->
+    <div v-if="fileBrowserError" class="error-banner">
+      <span>{{ fileBrowserError }}</span>
+      <button @click="fileBrowserError = null" title="Dismiss">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
     <!-- Tab Header -->
     <div class="tab-header">
       <button
@@ -869,4 +891,27 @@ function formatSize(bytes: number): string {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Error Banner */
+.error-banner {
+  padding: 0.5rem 1rem;
+  margin: 0.5rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 0.375rem;
+  color: #ef4444;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.error-banner button {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.error-banner button:hover { opacity: 1; }
 </style>

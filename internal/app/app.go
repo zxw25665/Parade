@@ -400,12 +400,16 @@ func (a *App) registerEventSubscribers() {
 				return
 			}
 			if len(incoming) > 0 {
-				_ = a.database.RunInTx(a.ctx, func(tx db.DBTx) error {
+				if err := a.database.RunInTx(a.ctx, func(tx db.DBTx) error {
 					for _, m := range incoming {
-						_ = tx.InsertMessageTx(a.ctx, m)
+						if err := tx.InsertMessageTx(a.ctx, m); err != nil {
+							return fmt.Errorf("insert message in sync tx: %w", err)
+						}
 					}
 					return nil
-				})
+				}); err != nil {
+					a.log(logger.Warning, "eventbus", fmt.Sprintf("conv sync insert failed: %v", err))
+				}
 				_ = a.database.UpdateConversationLastHLC(a.ctx, payload.ConversationID, incoming[len(incoming)-1].HLC)
 				a.peerJoinedMu.Lock()
 				if last, ok := a.convUpdatedAt[payload.ConversationID]; !ok || time.Since(last) > 3*time.Second {
@@ -464,6 +468,12 @@ func (a *App) Login(password string) error {
 			a.log(logger.Warning, "ipc", fmt.Sprintf("auto-start network failed: %v", serr))
 		}
 	}
+	return nil
+}
+
+func (a *App) Logout() error {
+	a.isLoggedIn = false
+	a.log(logger.Info, "ipc", "Logout called — clearing login state")
 	return nil
 }
 
@@ -737,16 +747,21 @@ func (a *App) syncAllConversationsWithPeer(peerUUID string) {
 		return
 	}
 	a.log(logger.Debug, "sync", fmt.Sprintf("syncAllConversationsWithPeer: %d conversations to sync to %s", len(convs), truncate(peerUUID, 16)))
+	sem := make(chan struct{}, 4)
 	for _, cv := range convs {
 		if a.syncOrch != nil {
-			go func(convID string) {
-				if err := a.syncOrch.SyncConversation(a.ctx, peerUUID, convID); err != nil {
+			sem <- struct{}{} // acquire slot
+			go func(convID string, lastHLC string) {
+				defer func() { <-sem }() // release slot
+				syncCtx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+				defer cancel()
+				if err := a.syncOrch.SyncConversation(syncCtx, peerUUID, convID); err != nil {
 					a.log(logger.Warning, "sync", fmt.Sprintf("merkle sync failed for conv=%s: %v, falling back to linear sync", convID[:8], err))
-					_ = a.netEng.SendConvSyncRequest(peerUUID, convID, "")
+					_ = a.netEng.SendConvSyncRequest(peerUUID, convID, lastHLC)
 				}
-			}(cv.ID)
+			}(cv.ID, cv.LastHLC)
 		} else {
-			_ = a.netEng.SendConvSyncRequest(peerUUID, cv.ID, "")
+			_ = a.netEng.SendConvSyncRequest(peerUUID, cv.ID, cv.LastHLC)
 		}
 	}
 }

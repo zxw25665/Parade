@@ -21,6 +21,7 @@ func RegisterMethods(a *App) {
 		register("CheckHasIdentity", a.CheckHasIdentity)
 		register("Register", a.Register)
 		register("Login", a.Login)
+		register("Logout", a.Logout)
 
 		// Teams
 		register("JoinTeam", a.JoinTeam)

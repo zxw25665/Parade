@@ -133,6 +133,35 @@ export class ParadeRPC {
     this.setState("disconnected");
   }
 
+  async reconnect(): Promise<void> {
+    if (this.connectionState === "connected") {
+      return;
+    }
+
+    this.log("Reconnecting...");
+    const maxAttempts = 5;
+    const baseDelay = 1000;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        this.setState("connecting");
+        await this.setupEventListeners();
+        this.setState("connected");
+        this.log("Reconnected successfully");
+        return;
+      } catch (error) {
+        this.log(`Reconnect attempt ${attempt + 1}/${maxAttempts} failed:`, error);
+        if (attempt < maxAttempts - 1) {
+          const delay = baseDelay * Math.pow(2, attempt);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+
+    this.setState("error");
+    throw new Error("Reconnect failed after maximum attempts");
+  }
+
   async call<T>(invokeName: string, args?: Record<string, unknown>): Promise<T> {
     if (this.connectionState !== "connected") {
       throw new Error(`Not connected (state: ${this.connectionState})`);
@@ -140,7 +169,17 @@ export class ParadeRPC {
 
     this.log("Invoking:", invokeName, args);
 
-    return invoke<T>(invokeName, args);
+    const timeoutMs = this.timeout;
+    const result = await Promise.race([
+      invoke<T>(invokeName, args),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`RPC call '${invokeName}' timed out after ${timeoutMs}ms`)),
+          timeoutMs
+        )
+      ),
+    ]);
+    return result;
   }
 
   on(event: EventName, handler: EventHandler): () => void {
@@ -180,6 +219,10 @@ export class ParadeRPC {
 
   async login(password: string): Promise<void> {
     await this.call<void>("login", { password });
+  }
+
+  async logout(): Promise<void> {
+    await this.call<void>("logout");
   }
 
   // =========================================================================

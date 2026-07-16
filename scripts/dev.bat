@@ -1,8 +1,17 @@
 @echo off
 REM One-command dev launch: Go daemon + Tauri frontend (Windows)
 REM Usage: scripts\dev.bat   or   pixi run dev
+REM
+REM The daemon is spawned automatically by Tauri's Rust bridge
+REM (src-tauri\src\lib.rs → spawn_daemon). We only need to build
+REM and stage the sidecar binary.
 
 cd /d "%~dp0\.."
+
+REM Kill any leftover daemon processes from a previous run
+taskkill /F /IM parade.exe 2>nul
+taskkill /F /IM parade-daemon.exe 2>nul
+timeout /t 1 /nobreak >nul
 
 REM Build the Go daemon and stage it as a Tauri sidecar
 echo [dev] Building daemon...
@@ -18,19 +27,8 @@ if errorlevel 1 (
 )
 echo [dev] Sidecar staged
 
-REM Start daemon in a separate console window (so you can see its logs)
-echo [dev] Starting daemon in separate window ^(debug mode^)...
-start "Parade Daemon" parade.exe daemon --debug
-
-REM Give the daemon a moment to start its IPC pipe
-echo [dev] Waiting for daemon to start...
-timeout /t 2 /nobreak >nul
-
-REM Start Tauri in dev mode (compiles Rust + opens WebView)
+REM Start Tauri in dev mode (compiles Rust + opens WebView).
+REM Tauri's Rust bridge will spawn the daemon automatically.
 echo [dev] Starting Tauri frontend...
 cd frontend
 pnpm run tauri dev
-
-REM Tauri exited — kill the daemon
-echo [dev] Stopping daemon...
-taskkill /F /FI "WINDOWTITLE eq Parade Daemon" 2>nul

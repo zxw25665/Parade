@@ -125,14 +125,30 @@ export const useChatStore = defineStore('chat', () => {
     if (convId && !messages.value[convId]) {
       messages.value[convId] = []
       messagePagination.value[convId] = { hasMore: true, offset: 0 }
-      loadMessages(convId, 50)
+      loadMessages(convId, 50).catch((e: unknown) => {
+        error.value = e instanceof Error ? e.message : 'Failed to load messages'
+      })
     }
   }
 
   function handleNewMessage(message: Message): void {
     const convId = message.conversation_id
     const existing = messages.value[convId] ?? []
-    messages.value[convId] = [...existing, message]
+    const updated = [...existing, message]
+
+    // Cap per-conversation messages at 500 to prevent unbounded growth
+    const MAX_MESSAGES = 500
+    if (updated.length > MAX_MESSAGES) {
+      messages.value[convId] = updated.slice(-MAX_MESSAGES)
+      const pag = messagePagination.value[convId]
+      if (pag) {
+        const trimmed = updated.length - MAX_MESSAGES
+        pag.offset = Math.max(0, pag.offset - trimmed)
+      }
+    } else {
+      messages.value[convId] = updated
+    }
+
     const conv = conversations.value.find(c => c.id === convId)
     if (conv) {
       conv.last_message = message.content
@@ -142,7 +158,9 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function handleConversationUpdated(): void {
-    loadConversations()
+    loadConversations().catch((e: unknown) => {
+      error.value = e instanceof Error ? e.message : 'Failed to refresh conversations'
+    })
   }
 
   function clearConversationMessages(convId: string): void {
