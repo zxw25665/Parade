@@ -19,13 +19,12 @@ import (
 )
 
 type Config struct {
-	UDS        string
-	DataDir    string
-	Port       int
-	ListenAddr string
-	Headless   bool
-	Debug      bool
-	Production bool
+	DataDir     string
+	Port        int
+	ListenAddr  string
+	Headless    bool
+	Debug       bool
+	Production  bool
 	MDNSEnabled bool
 }
 
@@ -57,27 +56,17 @@ func Run(args []string) {
 	eventBus := eventbus.New()
 	cry := crypto.NewEngine()
 
-	// Create IPC listener EARLY — before any potentially slow initialization
-	// (database, migrations, file engine). This ensures the named pipe / UDS
-	// socket is available within milliseconds of the daemon process starting,
-	// not seconds later after all engines are initialized.
+	// Create IPC server object early — needed for the ui Frontend that gets
+	// passed to NewApp below. The actual listener is started AFTER all engines
+	// are initialized and JSON-RPC methods are registered.
 	var ui app.Frontend
 	var ipcSrv app.IPCServer
 
 	if !cfg.Headless {
-		udsPath := cfg.UDS
-		if udsPath == "" {
-			udsPath = app.GetDefaultPipePath()
-		}
-		ipcSrv = app.NewIPCServer(udsPath)
-		ui = app.NewUDSFrontend(ipcSrv.Hub(), ipcSrv.EventHub())
-		if err := ipcSrv.Start(); err != nil {
-			log.Fatalf("failed to start IPC listener: %v", err)
-		}
-		defer ipcSrv.Stop()
-		log.Printf("[daemon] IPC listener started on %s", udsPath)
+		ipcSrv = app.NewIPCServer()
+		ui = app.NewStdioFrontend(ipcSrv.Hub())
 	} else {
-		log.Println("[daemon] headless mode — no IPC listener")
+		log.Println("[daemon] headless mode — no IPC")
 		ui = &app.NullUI{}
 	}
 
@@ -121,8 +110,19 @@ func Run(args []string) {
 		app.RegisterMethods(appInstance)
 	}
 
-	log.Printf("[daemon] Parade %s started (pid=%d, data=%s, p2p=%s:%d, uds=%s, headless=%v, debug=%v, production=%v, mdns=%v)",
-		appVersion, os.Getpid(), dataDir, cfg.ListenAddr, cfg.Port, cfg.UDS, cfg.Headless, cfg.Debug, cfg.Production, cfg.MDNSEnabled)
+	// Start IPC listener now that all methods are registered.
+	// Clients connecting from this point forward will always find
+	// the method table fully populated.
+	if ipcSrv != nil {
+		if err := ipcSrv.Start(); err != nil {
+			log.Fatalf("failed to start IPC listener: %v", err)
+		}
+		defer ipcSrv.Stop()
+		log.Printf("[daemon] IPC started on stdio")
+	}
+
+	log.Printf("[daemon] Parade %s started (pid=%d, data=%s, p2p=%s:%d, headless=%v, debug=%v, production=%v, mdns=%v)",
+		appVersion, os.Getpid(), dataDir, cfg.ListenAddr, cfg.Port, cfg.Headless, cfg.Debug, cfg.Production, cfg.MDNSEnabled)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
@@ -150,7 +150,6 @@ func loadConfig(args []string) Config {
 	cfg = app.MergeWithCLI(cfg, cliCfg)
 
 	finalCfg := Config{
-		UDS:         cfg.UDS,
 		DataDir:     cfg.DataDir,
 		Port:        cfg.Port,
 		ListenAddr:  cfg.ListenAddr,
@@ -169,11 +168,10 @@ func parseFlagsWithTracking(args []string) (*app.DaemonCLIConfig, error) {
 
 	cliCfg := &app.DaemonCLIConfig{}
 
-	fs.StringVar(&cliCfg.UDS, "uds", "", "IPC path (UDS socket or named pipe name)")
 	fs.StringVar(&cliCfg.DataDir, "data-dir", "", "Data directory (default: current directory)")
 	fs.IntVar(&cliCfg.Port, "port", 0, "P2P listen port")
 	fs.StringVar(&cliCfg.ListenAddr, "listen", "", "P2P listen address")
-	fs.BoolVar(&cliCfg.Headless, "headless", false, "Run without UDS listener")
+	fs.BoolVar(&cliCfg.Headless, "headless", false, "Run without IPC (automation/testing)")
 	fs.BoolVar(&cliCfg.Debug, "debug", false, "Debug mode: allow multi-instance, custom listen interface")
 	fs.BoolVar(&cliCfg.Production, "production", false, "Production mode: enforce security constraints")
 	fs.BoolVar(&cliCfg.MDNSEnabled, "mdns", false, "Enable mDNS peer discovery (default: enabled)")
@@ -221,9 +219,6 @@ func validateConfig(cfg Config) {
 		log.Println("[daemon] ⚠️  DEBUG MODE — not for production use")
 	}
 
-	if cfg.Headless && cfg.UDS != "" {
-		// UDS path is irrelevant in headless mode, but don't error
-	}
 }
 
 // appVersion is set at build time or defaults.
