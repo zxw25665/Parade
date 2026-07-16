@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command dev launch: Go daemon + Tauri frontend
+# One-command dev launch: Go daemon + Tauri frontend (Linux/macOS)
 # Usage: ./scripts/dev.sh   or   pixi run dev
 set -e
 
@@ -8,11 +8,20 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$ROOT_DIR"
 
-# Build the Go daemon if not already built
-if [ ! -f parade ]; then
-    echo "[dev] Building daemon..."
-    go build -o parade ./cmd/parade/
-fi
+# Detect target triple for Tauri sidecar naming
+case "$(uname -s)" in
+    Darwin) TARGET_TRIPLE="$(uname -m)-apple-darwin" ;;
+    *)      TARGET_TRIPLE="$(uname -m)-unknown-linux-gnu" ;;
+esac
+
+# Build the Go daemon
+echo "[dev] Building daemon..."
+go build -o parade ./cmd/parade/
+
+# Stage as Tauri sidecar (required by externalBin in tauri.conf.json)
+mkdir -p frontend/src-tauri/binaries
+cp parade "frontend/src-tauri/binaries/parade-daemon-${TARGET_TRIPLE}"
+echo "[dev] Sidecar staged (${TARGET_TRIPLE})"
 
 # Start daemon in background with debug mode
 echo "[dev] Starting daemon (debug mode)..."
