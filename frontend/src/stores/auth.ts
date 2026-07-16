@@ -23,11 +23,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function waitForRPC(): Promise<ParadeRPC> {
-    for (let i = 0; i < 20; i++) {
-      if (rpc && rpc.getState() === 'connected') return rpc
+    if (!rpc) throw new Error('RPC not injected')
+    const deadline = Date.now() + 65_000
+    while (Date.now() < deadline) {
+      if (rpc.getState() === 'connected') return rpc
       await new Promise(r => setTimeout(r, 200))
     }
-    throw new Error('RPC connection timeout')
+    throw new Error('Daemon did not start in time (65s timeout)')
   }
 
   async function checkIdentity(): Promise<boolean> {
@@ -35,19 +37,24 @@ export const useAuthStore = defineStore('auth', () => {
     loading.value = true
     error.value = null
 
-    // Poll until daemon is ready (it spawns on a background thread).
-    // Once connected, the call returns immediately on subsequent attempts.
-    const start = Date.now()
-    const daemonTimeout = 30000
-    while (true) {
+    const deadline = Date.now() + 30_000
+    let attempts = 0
+    while (Date.now() < deadline && attempts < 150) {
+      attempts++
       try {
         hasIdentity.value = await r.checkHasIdentity()
         loading.value = false
         return hasIdentity.value
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        if (msg.includes('Daemon not connected') && (Date.now() - start) < daemonTimeout) {
-          await new Promise(r => setTimeout(r, 500))
+        // Retry on any connection-related error during daemon startup window
+        if ((msg.includes('Not connected') ||
+             msg.includes('timeout') ||
+             msg.includes('Daemon not connected') ||
+             msg.includes('RPC not initialized') ||
+             msg.includes('Timed out')) &&
+            (Date.now() - deadline + 30_000) < 30_000) {
+          await new Promise(r => setTimeout(r, 200))
           continue
         }
         error.value = msg || 'Failed to check identity'
@@ -55,6 +62,9 @@ export const useAuthStore = defineStore('auth', () => {
         throw e
       }
     }
+    error.value = 'Identity check timed out after 30s'
+    loading.value = false
+    throw new Error('Identity check timed out')
   }
 
   async function register(password: string): Promise<void> {
@@ -89,6 +99,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout(): Promise<void> {
+    try {
+      if (rpc && rpc.getState() === 'connected') {
+        await rpc.logout()
+      }
+    } catch {
+      // Ignore — daemon may already be down
+    }
     isLoggedIn.value = false
     currentTeam.value = null
     teams.value = []

@@ -91,3 +91,4 @@ parade-*
 .pixi/*
 !.pixi/config.toml
 frontend/src-tauri/gen/schemas/
+.omo/

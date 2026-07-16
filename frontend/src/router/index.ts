@@ -74,6 +74,17 @@ router.beforeEach(async (to, _from, next) => {
       next({ name: 'login' })
       return
     }
+    // Prevent navigation to authenticated routes if RPC is not ready
+    try {
+      const { useRPC } = await import('@/plugins/rpc')
+      const rpc = useRPC()
+      if (rpc.getState() !== 'connected') {
+        next({ name: 'home' })
+        return
+      }
+    } catch {
+      // RPC plugin not yet initialized — allow navigation (will retry)
+    }
   }
 
   if (to.meta.requiresNoAuth) {

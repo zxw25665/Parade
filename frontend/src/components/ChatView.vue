@@ -18,6 +18,7 @@ const leftSidebarCollapsed = ref(false)
 const rightPanelCollapsed = ref(true)
 const activeRightTab = ref<'files' | 'downloads'>('files')
 const isMobile = ref(false)
+const chatViewError = ref<string | null>(null)
 
 // Resizable panel state
 const leftSidebarWidth = ref(280)
@@ -107,16 +108,28 @@ function toggleRightPanel() {
 }
 
 async function handleConnectPeer(ipAddress: string) {
+  chatViewError.value = null
   try {
     await peersStore.connectToPeer(ipAddress)
   } catch (error) {
-    console.error('Failed to connect:', error)
+    chatViewError.value = error instanceof Error ? error.message : 'Failed to connect to peer'
   }
 }
 </script>
 
 <template>
   <div class="chat-view" :class="{ 'sidebar-collapsed': leftSidebarCollapsed, 'right-collapsed': rightPanelCollapsed }">
+    <!-- Error Banner -->
+    <div v-if="chatViewError" class="error-banner">
+      <span>{{ chatViewError }}</span>
+      <button @click="chatViewError = null" title="Dismiss">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
     <!-- Left Sidebar: Conversations + Peers -->
     <aside 
       class="left-sidebar"
@@ -447,4 +460,32 @@ async function handleConnectPeer(ipAddress: string) {
     display: none;
   }
 }
+
+/* Error Banner */
+.error-banner {
+  padding: 0.5rem 1rem;
+  margin: 0.5rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 0.375rem;
+  color: #ef4444;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.error-banner button {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.error-banner button:hover { opacity: 1; }
 </style>

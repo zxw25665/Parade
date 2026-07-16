@@ -122,7 +122,7 @@ func (bus *localEventBus) ensureTopicLoopLocked(topic string) {
 		return
 	}
 
-	ch := make(chan Event, 256)
+	ch := make(chan Event, 1024)
 	ctx, cancel := context.WithCancel(context.Background())
 	bus.topicChs[topic] = ch
 	bus.cancelFns[topic] = cancel
@@ -195,6 +195,10 @@ func (bus *localEventBus) Publish(topic string, payload interface{}) {
 
 	select {
 	case ch <- ev:
+		// Warn if channel is at 75% capacity or higher after enqueue
+		if len(ch) >= cap(ch)*3/4 {
+			log.Printf("[EventBus] WARN: topic [%s] channel at %d/%d (75%%+)", topic, len(ch), cap(ch))
+		}
 	default:
 		log.Printf("[EventBus] WARN: topic [%s] channel full (cap=%d), dropping event", topic, cap(ch))
 	}

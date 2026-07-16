@@ -16,6 +16,7 @@ const hasMore = ref(false)
 const loadingMore = ref(false)
 const limit = ref(50)
 const offset = ref(0)
+const sendError = ref<string | null>(null)
 
 // Computed
 const activeConv = computed(() => chatStore.selectedConversation)
@@ -58,13 +59,19 @@ watch(() => chatStore.selectedConvId, async (newId) => {
   scrollToBottom('instant')
 }, { immediate: true })
 
-// Handle new messages
+// Handle new messages — watch array reference changes (shallow), not deep
 watch(messages, async () => {
+  await nextTick()
+  scrollToBottom('instant')
+})
+
+// Auto-scroll when new messages arrive at bottom
+watch(() => messages.value.length, async () => {
   if (isAtBottom.value) {
     await nextTick()
     scrollToBottom('smooth')
   }
-}, { deep: true })
+})
 
 function handleScroll() {
   if (!messageListRef.value) return
@@ -112,6 +119,7 @@ function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
 
 async function handleSendMessage(text: string) {
   if (!activeConv.value || !text.trim()) return
+  sendError.value = null
   
   try {
     if (activeConv.value.type === 'team') {
@@ -119,7 +127,7 @@ async function handleSendMessage(text: string) {
     } else {
       const peerUUID = activeConv.value.peer_pubkey
       if (!peerUUID) {
-        console.error('No peer pubkey for private conversation')
+        sendError.value = 'No peer pubkey for private conversation'
         return
       }
       await chatStore.sendPrivateMessage(peerUUID, text)
@@ -128,7 +136,7 @@ async function handleSendMessage(text: string) {
     await nextTick()
     scrollToBottom('smooth')
   } catch (error) {
-    console.error('Failed to send message:', error)
+    sendError.value = error instanceof Error ? error.message : 'Failed to send message'
   }
 }
 
@@ -148,6 +156,17 @@ onMounted(() => {
 
 <template>
   <div class="chat-panel">
+    <!-- Error Banner -->
+    <div v-if="sendError" class="error-banner">
+      <span>{{ sendError }}</span>
+      <button @click="sendError = null" title="Dismiss">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
     <!-- Empty State -->
     <div v-if="!activeConv" class="empty-state">
       <div class="empty-icon">
@@ -545,4 +564,27 @@ onMounted(() => {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* Error Banner */
+.error-banner {
+  padding: 0.5rem 1rem;
+  margin: 0.5rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 0.375rem;
+  color: #ef4444;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.error-banner button {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.error-banner button:hover { opacity: 1; }
 </style>

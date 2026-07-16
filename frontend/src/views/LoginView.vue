@@ -21,11 +21,9 @@ async function handleLogin() {
   try {
     await authStore.login(password.value)
     
-    if (authStore.teams.length > 0) {
-      router.replace('/chat')
-    } else {
-      router.replace('/team-join')
-    }
+    // Use teams from hydrate() result, which login() calls internally
+    const teams = authStore.teams
+    await router.replace(teams.length > 0 ? '/chat' : '/team-join')
   } catch (e) {
     localError.value = e instanceof Error ? e.message : 'Failed to unlock identity'
   }
