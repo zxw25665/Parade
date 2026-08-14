@@ -1,82 +1,83 @@
-import { test, expect } from './helpers'
+import { test, expect, waitForRPCReady, setupAuthenticatedState, createTeamViaStore } from './helpers'
 
-test.describe('Chat Flow (requires Tauri backend)', () => {
-  test.skip('should require auth to access chat page', async ({ page }) => {
+const goto = (page: any, path: string) => page.evaluate((p: string) => (window as any).__parade_router.push(p), path)
+
+test.describe('Chat Flow', () => {
+  test('should require auth to access chat page', async ({ page }) => {
+    await page.goto('/')
+    await waitForRPCReady(page)
     await page.goto('/chat')
     await page.waitForLoadState('networkidle')
     await expect(page).toHaveURL(/\/(login|setup)/)
   })
 
-  test.skip('should show chat interface after login', async ({ page }) => {
-    await page.goto('/chat')
-    await page.waitForLoadState('networkidle')
-    await expect(page.locator('.chat-view')).toBeVisible()
-  })
+  test.describe('with authenticated state', () => {
+    test.beforeEach(async ({ page }) => {
+      await page.goto('/')
+      await setupAuthenticatedState(page)
+      await createTeamViaStore(page)
+    })
 
-  test.skip('should show empty state when no conversation selected', async ({ page }) => {
-    await page.goto('/chat')
-    await page.waitForLoadState('networkidle')
-    await expect(page.locator('.empty-state')).toBeVisible()
-    await expect(page.locator('.empty-title')).toContainText('Select a conversation')
-  })
+    test('should show chat interface after login', async ({ page }) => {
+      await goto(page, '/chat')
+      await page.waitForURL('**/chat')
+      await page.waitForLoadState('networkidle')
+      await expect(page.locator('.chat-view')).toBeVisible()
+    })
 
-  test.skip('should have conversations section in sidebar', async ({ page }) => {
-    await page.goto('/chat')
-    await page.waitForLoadState('networkidle')
-    
-    const sidebar = page.locator('.left-sidebar')
-    await expect(sidebar).toBeVisible()
-    
-    const conversationsSection = page.locator('.section-title', { hasText: 'Conversations' })
-    await expect(conversationsSection).toBeVisible()
-  })
+    test('should show empty state when no conversation selected', async ({ page }) => {
+      await goto(page, '/chat')
+      await page.waitForURL('**/chat')
+      await page.waitForLoadState('networkidle')
+      await expect(page.locator('.empty-state').first()).toBeVisible()
+      await expect(page.locator('.empty-title')).toContainText('Select a conversation')
+    })
 
-  test.skip('should have peers section in sidebar', async ({ page }) => {
-    await page.goto('/chat')
-    await page.waitForLoadState('networkidle')
-    
-    const sidebar = page.locator('.left-sidebar')
-    await expect(sidebar).toBeVisible()
-    
-    const peersSection = page.locator('.section-title', { hasText: 'Peers' })
-    await expect(peersSection).toBeVisible()
-  })
+    test('should have conversations section in sidebar', async ({ page }) => {
+      await goto(page, '/chat')
+      await page.waitForURL('**/chat')
+      await page.waitForLoadState('networkidle')
+      await expect(page.locator('.left-sidebar')).toBeVisible()
+      await expect(page.locator('.section-title', { hasText: 'Conversations' })).toBeVisible()
+    })
 
-  test.skip('should have right panel with tabs', async ({ page }) => {
-    await page.goto('/chat')
-    await page.waitForLoadState('networkidle')
-    
-    await expect(page.locator('.right-panel')).toBeVisible()
-    
-    const filesTab = page.locator('.panel-tab', { hasText: 'Files' })
-    const downloadsTab = page.locator('.panel-tab', { hasText: 'Downloads' })
-    
-    await expect(filesTab).toBeVisible()
-    await expect(downloadsTab).toBeVisible()
-  })
+    test('should have peers section in sidebar', async ({ page }) => {
+      await goto(page, '/chat')
+      await page.waitForURL('**/chat')
+      await page.waitForLoadState('networkidle')
+      await expect(page.locator('.left-sidebar')).toBeVisible()
+      await expect(page.locator('.section-title', { hasText: 'Peers' })).toBeVisible()
+    })
 
-  test.skip('should send team message', async ({ page }) => {
-    await page.goto('/chat')
-    await page.waitForLoadState('networkidle')
-    
-    await page.locator('.conversation-item').first().click()
-    
-    const input = page.locator('.input-field')
-    await input.fill('Hello from E2E test!')
-    
-    const sendBtn = page.locator('.send-btn')
-    await sendBtn.click()
-    
-    await expect(page.locator('.message')).toContainText('Hello from E2E test!')
-  })
+    test('should have right panel with tabs', async ({ page }) => {
+      await goto(page, '/chat')
+      await page.waitForURL('**/chat')
+      await page.waitForLoadState('networkidle')
+      await expect(page.locator('.right-panel').first()).toBeVisible()
+      await expect(page.locator('.panel-tab', { hasText: 'Files' })).toBeVisible()
+      await expect(page.locator('.panel-tab', { hasText: 'Downloads' })).toBeVisible()
+    })
 
-  test.skip('should switch between team and private conversations', async ({ page }) => {
-    await page.goto('/chat')
-    await page.waitForLoadState('networkidle')
-    
-    const conversations = page.locator('.conversation-item')
-    const count = await conversations.count()
-    
-    expect(count).toBeGreaterThan(0)
+    // Requires conversation with messages — conversation not auto-created
+    test.skip('should send team message', async ({ page }) => {
+      await goto(page, '/chat')
+      await page.waitForURL('**/chat')
+      await page.waitForLoadState('networkidle')
+      await page.locator('.conversation-item').first().click()
+      const input = page.locator('.input-field')
+      await input.fill('Hello from E2E test!')
+      const sendBtn = page.locator('.send-btn')
+      await sendBtn.click()
+      await expect(page.locator('.message')).toContainText('Hello from E2E test!')
+    })
+
+    // Requires multiple conversations — only one team exists
+    test.skip('should switch between team and private conversations', async ({ page }) => {
+      await goto(page, '/chat')
+      await page.waitForURL('**/chat')
+      await page.waitForLoadState('networkidle')
+      const count = await page.locator('.conversation-item').count()
+      expect(count).toBeGreaterThan(0)
+    })
   })
 })
