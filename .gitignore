@@ -92,3 +92,13 @@ parade-*
 !.pixi/config.toml
 frontend/src-tauri/gen/schemas/
 .omo/
+
+# Playwright
+playwright-report/
+blob-report/
+playwright/.cache/
+playwright/.auth/
+.local-browsers/
+.auth/
+auth.json
+test-results/
