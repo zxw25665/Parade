@@ -19,6 +19,9 @@ app.use(createRPCPlugin())
 
 app.mount('#app')
 
+// Expose router for E2E test navigation (client-side routing preserves store state)
+;(window as unknown as Record<string, unknown>).__parade_router = router
+
 // =========================================================================
 // CRITICAL: Inject RPC reference into ALL stores IMMEDIATELY (synchronous).
 // This must happen before any component tries to call store methods.
