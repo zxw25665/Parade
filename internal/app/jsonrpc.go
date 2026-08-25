@@ -4,65 +4,61 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sync"
 )
 
 type MethodHandler func(params json.RawMessage) (interface{}, error)
 
 var (
 	registeredMethods map[string]MethodHandler
-	registerOnce      sync.Once
 )
 
 func RegisterMethods(a *App) {
-	registerOnce.Do(func() {
-		registeredMethods = make(map[string]MethodHandler)
+	registeredMethods = make(map[string]MethodHandler)
 
-		register("CheckHasIdentity", a.CheckHasIdentity)
-		register("Register", a.Register)
-		register("Login", a.Login)
-		register("Logout", a.Logout)
+	register("CheckHasIdentity", a.CheckHasIdentity)
+	register("Register", a.Register)
+	register("Login", a.Login)
+	register("Logout", a.Logout)
 
-		// Teams
-		register("JoinTeam", a.JoinTeam)
-		register("JoinTeamWithName", a.JoinTeamWithName)
-		register("LeaveTeam", a.LeaveTeam)
-		register("SwitchTeam", a.SwitchTeam)
-		register("ListTeams", a.ListTeams)
-		register("GetActiveTeam", a.GetActiveTeam)
-		register("GetPubKey", a.GetPubKey)
+	// Teams
+	register("JoinTeam", a.JoinTeam)
+	register("JoinTeamWithName", a.JoinTeamWithName)
+	register("LeaveTeam", a.LeaveTeam)
+	register("SwitchTeam", a.SwitchTeam)
+	register("ListTeams", a.ListTeams)
+	register("GetActiveTeam", a.GetActiveTeam)
+	register("GetPubKey", a.GetPubKey)
 
-		register("SendTeamChat", a.SendTeamChat)
-		register("SendPrivateChat", a.SendPrivateChat)
-		register("ListConversations", a.ListConversations)
-		register("GetConversationMessages", a.GetConversationMessages)
-		register("StartPrivateConversation", a.StartPrivateConversation)
+	register("SendTeamChat", a.SendTeamChat)
+	register("SendPrivateChat", a.SendPrivateChat)
+	register("ListConversations", a.ListConversations)
+	register("GetConversationMessages", a.GetConversationMessages)
+	register("StartPrivateConversation", a.StartPrivateConversation)
 
-		register("GetPeers", a.GetPeers)
-		register("GetPeersWithStatus", a.GetPeersWithStatus)
-		register("ConnectToPeer", a.ConnectToPeer)
-		register("ListSavedPeers", a.ListSavedPeers)
-		register("SavePeer", a.SavePeer)
-		register("RemovePeer", a.RemovePeer)
-		register("OnForeground", a.OnForeground)
+	register("GetPeers", a.GetPeers)
+	register("GetPeersWithStatus", a.GetPeersWithStatus)
+	register("ConnectToPeer", a.ConnectToPeer)
+	register("ListSavedPeers", a.ListSavedPeers)
+	register("SavePeer", a.SavePeer)
+	register("RemovePeer", a.RemovePeer)
+	register("OnForeground", a.OnForeground)
 
-		register("ShareDirectory", a.ShareDirectory)
-		register("UnshareDirectory", a.UnshareDirectory)
-		register("GetDirectoryChildren", a.GetDirectoryChildren)
-		register("GetRemoteDirectoryChildren", a.GetRemoteDirectoryChildren)
-		register("StartDownload", a.StartDownload)
-		register("GetDefaultDownloadDir", a.GetDefaultDownloadDir)
+	register("ShareDirectory", a.ShareDirectory)
+	register("UnshareDirectory", a.UnshareDirectory)
+	register("GetDirectoryChildren", a.GetDirectoryChildren)
+	register("GetRemoteDirectoryChildren", a.GetRemoteDirectoryChildren)
+	register("StartDownload", a.StartDownload)
+	register("GetDefaultDownloadDir", a.GetDefaultDownloadDir)
 
-		register("CreateShareGroup", a.CreateShareGroup)
-		register("ListShareGroups", a.ListShareGroups)
-		register("AddDirectoryToShareGroup", a.AddDirectoryToShareGroup)
-		register("RemoveDirectoryFromShareGroup", a.RemoveDirectoryFromShareGroup)
-		register("DeleteShareGroup", a.DeleteShareGroup)
-		register("GetShareGroupDirs", a.GetShareGroupDirs)
+	register("CreateShareGroup", a.CreateShareGroup)
+	register("ListShareGroups", a.ListShareGroups)
+	register("AddDirectoryToShareGroup", a.AddDirectoryToShareGroup)
+	register("RemoveDirectoryFromShareGroup", a.RemoveDirectoryFromShareGroup)
+	register("DeleteShareGroup", a.DeleteShareGroup)
+	register("GetShareGroupDirs", a.GetShareGroupDirs)
 
-		register("ExportLogs", a.ExportLogs)
-		register("WriteLogFile", a.WriteLogFile)
-	})
+	register("ExportLogs", a.ExportLogs)
+	register("WriteLogFile", a.WriteLogFile)
 }
 
 func register(name string, fn interface{}) {

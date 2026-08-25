@@ -60,6 +60,7 @@ type App struct {
 	peerJoinedMu  sync.Mutex
 
 	identityPath string
+	teamKeysPath string
 	dataDir      string
 	savedPeers   []string
 	mdnsEnabled  bool
@@ -89,6 +90,27 @@ func NewApp(bus eventbus.EventBus, cry crypto.Engine, d db.Database, net Network
 func (a *App) WithIdentityPath(path string) *App {
 	a.identityPath = path
 	return a
+}
+
+// WithTeamKeysPath 配置队伍密钥持久化路径（通常为 <data-dir>/.parade_teams）。
+// 未配置时，若已通过 LoadPeersConfig 设置 dataDir，则回退到 <data-dir>/.parade_teams。
+func (a *App) WithTeamKeysPath(path string) *App {
+	a.teamKeysPath = path
+	return a
+}
+
+// configureTeamKeys 在首次身份操作前把队伍密钥持久化路径推送到 crypto 引擎。
+func (a *App) configureTeamKeys() {
+	if a.crypto == nil {
+		return
+	}
+	path := a.teamKeysPath
+	if path == "" && a.dataDir != "" {
+		path = filepath.Join(a.dataDir, crypto.TeamKeysFileName)
+	}
+	if path != "" {
+		a.crypto.SetTeamKeysFile(path)
+	}
 }
 
 func (a *App) WithMDNSEnabled(enabled bool) *App {
@@ -175,7 +197,9 @@ func (a *App) initMerkleSync() {
 
 	a.syncOrch = merkleSync.NewSyncOrchestrator(a.database, a.netEng, a.logr, a.evBus)
 
-	if ms, ok := a.netEng.(interface{ SetMerkleSyncHandler(merkleSync.MerkleSyncHandler) }); ok {
+	if ms, ok := a.netEng.(interface {
+		SetMerkleSyncHandler(merkleSync.MerkleSyncHandler)
+	}); ok {
 		ms.SetMerkleSyncHandler(a.syncOrch)
 	}
 }
@@ -190,7 +214,9 @@ func (a *App) Shutdown() {
 		_ = a.netEng.SavePeers()
 	}
 	if a.crypto != nil {
-		_ = a.crypto.SaveTeamKeys()
+		if err := a.crypto.SaveTeamKeys(); err != nil {
+			a.log(logger.Error, "app", fmt.Sprintf("save team keys failed: %v", err))
+		}
 	}
 	for _, s := range a.subs {
 		a.evBus.Unsubscribe(s.topic, s.id)
@@ -445,6 +471,7 @@ func (a *App) registerEventSubscribers() {
 // ---- 前端 API ----
 
 func (a *App) Register(password string) error {
+	a.configureTeamKeys()
 	a.log(logger.Debug, "ipc", fmt.Sprintf("Register called (%d chars)", len(password)))
 	err := a.crypto.RegisterIdentity(password, a.identityPath)
 	if err != nil {
@@ -454,6 +481,7 @@ func (a *App) Register(password string) error {
 }
 
 func (a *App) Login(password string) error {
+	a.configureTeamKeys()
 	a.log(logger.Debug, "ipc", "Login called")
 	if err := a.crypto.LoadIdentity(password, a.identityPath); err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("Login failed: %v", err))
@@ -485,7 +513,9 @@ func (a *App) CheckHasIdentity() bool {
 
 func (a *App) JoinTeam(secret string) error {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("JoinTeam called (%d chars)", len(secret)))
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	_, err := a.JoinTeamWithName("", secret)
 	if err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("JoinTeam failed: %v", err))
@@ -495,7 +525,9 @@ func (a *App) JoinTeam(secret string) error {
 
 func (a *App) JoinTeamWithName(name, secret string) (string, error) {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("JoinTeamWithName called (name=%s, %d chars)", name, len(secret)))
-	if err := a.checkLoggedIn(); err != nil { return "", err }
+	if err := a.checkLoggedIn(); err != nil {
+		return "", err
+	}
 
 	// Derive deterministic team UUID from secret (same secret → same UUID across devices)
 	teamKey := sha256.Sum256([]byte(secret))
@@ -511,12 +543,14 @@ func (a *App) JoinTeamWithName(name, secret string) (string, error) {
 		}
 	}
 
-	a.crypto.SetTeamKeyForTeam(teamID, secret)
+	if err := a.crypto.SetTeamKeyForTeam(teamID, secret); err != nil {
+		a.log(logger.Warning, "ipc", fmt.Sprintf("JoinTeamWithName failed: %v", err))
+		return "", fmt.Errorf("failed to persist team key: %w", err)
+	}
 	if err := a.crypto.SetActiveTeam(teamID); err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("JoinTeamWithName failed: %v", err))
 		return "", err
 	}
-
 	team := &db.Team{
 		ID:        teamID,
 		Name:      name,
@@ -541,18 +575,25 @@ func (a *App) JoinTeamWithName(name, secret string) (string, error) {
 
 func (a *App) LeaveTeam(teamID string) error {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("LeaveTeam called (team=%s)", teamID))
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	if err := a.database.DeleteTeam(a.ctx, teamID); err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("LeaveTeam failed: %v", err))
 		return fmt.Errorf("failed to delete team: %w", err)
 	}
-	a.crypto.RemoveTeamKey(teamID)
+	if err := a.crypto.RemoveTeamKey(teamID); err != nil {
+		a.log(logger.Warning, "ipc", fmt.Sprintf("LeaveTeam failed: %v", err))
+		return fmt.Errorf("failed to persist team key removal: %w", err)
+	}
 	return nil
 }
 
 func (a *App) SwitchTeam(teamID string) error {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("SwitchTeam called (team=%s)", teamID))
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	err := a.crypto.SetActiveTeam(teamID)
 	if err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("SwitchTeam failed: %v", err))
@@ -583,17 +624,23 @@ func (a *App) ListTeams() ([]map[string]interface{}, error) {
 }
 
 func (a *App) GetActiveTeam() (string, error) {
-	if err := a.checkLoggedIn(); err != nil { return "", err }
+	if err := a.checkLoggedIn(); err != nil {
+		return "", err
+	}
 	return a.crypto.GetActiveTeam(), nil
 }
 
 func (a *App) GetPubKey() (string, error) {
-	if err := a.checkLoggedIn(); err != nil { return "", err }
+	if err := a.checkLoggedIn(); err != nil {
+		return "", err
+	}
 	return a.crypto.GetPublicKeyBase64(), nil
 }
 
 func (a *App) ListConversations() ([]map[string]interface{}, error) {
-	if err := a.checkLoggedIn(); err != nil { return nil, err }
+	if err := a.checkLoggedIn(); err != nil {
+		return nil, err
+	}
 	a.log(logger.Debug, "ipc", "ListConversations called")
 	convs, err := a.database.ListConversations(a.ctx, a.crypto.GetActiveTeam())
 	if err != nil {
@@ -602,24 +649,26 @@ func (a *App) ListConversations() ([]map[string]interface{}, error) {
 	res := make([]map[string]interface{}, 0, len(convs))
 	for _, cv := range convs {
 		res = append(res, map[string]interface{}{
-			"id":           cv.ID,
-			"team_id":      cv.TeamID,
-			"type":         cv.Type,
-			"display_name": cv.DisplayName,
-			"peer_pubkey":  cv.PeerPubkey,
-			"my_pubkey":    cv.MyPubkey,
-			"last_hlc":     cv.LastHLC,
-			"last_message": cv.LastMessage,
+			"id":            cv.ID,
+			"team_id":       cv.TeamID,
+			"type":          cv.Type,
+			"display_name":  cv.DisplayName,
+			"peer_pubkey":   cv.PeerPubkey,
+			"my_pubkey":     cv.MyPubkey,
+			"last_hlc":      cv.LastHLC,
+			"last_message":  cv.LastMessage,
 			"last_msg_time": cv.LastMsgTime.Format(time.RFC3339),
-			"created_at":   cv.CreatedAt.Format(time.RFC3339),
-			"updated_at":   cv.UpdatedAt.Format(time.RFC3339),
+			"created_at":    cv.CreatedAt.Format(time.RFC3339),
+			"updated_at":    cv.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 	return res, nil
 }
 
 func (a *App) GetConversationMessages(convID string, limit int, offset int) ([]map[string]interface{}, error) {
-	if err := a.checkLoggedIn(); err != nil { return nil, err }
+	if err := a.checkLoggedIn(); err != nil {
+		return nil, err
+	}
 	a.log(logger.Debug, "ipc", fmt.Sprintf("GetConversationMessages called (conv=%s)", convID))
 	conv, _ := a.database.GetConversation(a.ctx, convID)
 	msgs, err := a.database.GetConversationMessages(a.ctx, convID, limit, offset)
@@ -661,7 +710,9 @@ func (a *App) GetConversationMessages(convID string, limit int, offset int) ([]m
 }
 
 func (a *App) StartPrivateConversation(peerUUID string) (string, error) {
-	if err := a.checkLoggedIn(); err != nil { return "", err }
+	if err := a.checkLoggedIn(); err != nil {
+		return "", err
+	}
 	a.log(logger.Debug, "ipc", fmt.Sprintf("StartPrivateConversation called (peer=%s)", truncate(peerUUID, 16)))
 	myUUID := a.crypto.GetPersonalUUID()
 	convID := DerivePrivateConvID(myUUID, peerUUID)
@@ -691,8 +742,12 @@ func (a *App) StartPrivateConversation(peerUUID string) (string, error) {
 }
 
 func (a *App) GetPeersWithStatus() ([]map[string]interface{}, error) {
-	if err := a.checkLoggedIn(); err != nil { return nil, err }
-	if a.netEng == nil { return nil, nil }
+	if err := a.checkLoggedIn(); err != nil {
+		return nil, err
+	}
+	if a.netEng == nil {
+		return nil, nil
+	}
 	statuses := a.netEng.PeersWithStatus()
 	res := make([]map[string]interface{}, 0, len(statuses))
 	for _, s := range statuses {
@@ -766,7 +821,7 @@ func (a *App) syncAllConversationsWithPeer(peerUUID string) {
 	}
 }
 
-func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte) ([]byte, error), sendFn func([]byte) error) {
+func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte) ([]byte, error), sendFn func([]byte) error) error {
 	myUUID := a.crypto.GetPersonalUUID()
 	hlc := GenerateHLC(myUUID)
 	raw := []byte(text)
@@ -775,7 +830,7 @@ func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte
 	enc, err := encryptFn(raw)
 	if err != nil {
 		a.log(logger.Warning, "app", "encrypt for storage failed: "+err.Error())
-		return
+		return fmt.Errorf("encrypt message for storage: %w", err)
 	}
 
 	msgID := uuid.New().String()
@@ -791,8 +846,11 @@ func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte
 	}
 	if err := a.database.InsertMessage(a.ctx, msg); err != nil {
 		a.log(logger.Error, "app", fmt.Sprintf("insert message failed: %v", err))
+		return fmt.Errorf("insert message: %w", err)
 	}
-	_ = a.database.UpdateConversationLastHLC(a.ctx, convID, hlc)
+	if err := a.database.UpdateConversationLastHLC(a.ctx, convID, hlc); err != nil {
+		return fmt.Errorf("update conversation: %w", err)
+	}
 
 	a.ui.Notify("ui_new_message", map[string]interface{}{
 		"id":              msgID,
@@ -817,24 +875,29 @@ func (a *App) sendConversationMessage(convID, text string, encryptFn func([]byte
 	encrypted, err := encryptFn(netPayload)
 	if err != nil {
 		a.log(logger.Warning, "app", "encrypt for send failed: "+err.Error())
-		return
+		return fmt.Errorf("encrypt message for network: %w", err)
 	}
 	if err := sendFn(encrypted); err != nil {
 		a.log(logger.Warning, "app", "send failed: "+err.Error())
+		return fmt.Errorf("send message: %w", err)
 	}
+	return nil
 }
 
 func (a *App) SendTeamChat(text string) error {
 	a.log(logger.Debug, "ipc", fmt.Sprintf("SendTeamChat called (%d chars)", len(text)))
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	convID := DeriveTeamConvID(a.crypto.GetActiveTeam())
 	a.ensureConversation(convID, "team", "", "")
-	a.sendConversationMessage(convID, text, a.crypto.EncryptTeam, a.netEng.BroadcastTeam)
-	return nil
+	return a.sendConversationMessage(convID, text, a.crypto.EncryptTeam, a.netEng.BroadcastTeam)
 }
 
 func (a *App) SendPrivateChat(targetUUID, text string) error {
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	a.log(logger.Debug, "ipc", fmt.Sprintf("SendPrivateChat called (to=%s, %d chars)", truncate(targetUUID, 16), len(text)))
 	if targetUUID == "" {
 		return errors.New("target UUID is required")
@@ -845,26 +908,31 @@ func (a *App) SendPrivateChat(targetUUID, text string) error {
 	}
 	convID := DerivePrivateConvID(a.crypto.GetPersonalUUID(), targetUUID)
 	a.ensureConversation(convID, "private", targetUUID, pubkey)
-	a.sendConversationMessage(convID, text,
+	return a.sendConversationMessage(convID, text,
 		func(payload []byte) ([]byte, error) { return a.crypto.EncryptPrivate(payload, pubkey) },
 		func(payload []byte) error { return a.netEng.UnicastPrivate(targetUUID, payload) },
 	)
-	return nil
 }
 
 func (a *App) GetPeers() ([]map[string]string, error) {
-	if err := a.checkLoggedIn(); err != nil { return nil, err }
+	if err := a.checkLoggedIn(); err != nil {
+		return nil, err
+	}
 	a.log(logger.Debug, "ipc", "GetPeers called")
 	return a.netEng.Peers(), nil
 }
 
 func (a *App) ListSavedPeers() ([]string, error) {
-	if err := a.checkLoggedIn(); err != nil { return nil, err }
+	if err := a.checkLoggedIn(); err != nil {
+		return nil, err
+	}
 	return a.savedPeers, nil
 }
 
 func (a *App) SavePeer(ipAddress string) error {
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	a.log(logger.Debug, "ipc", fmt.Sprintf("SavePeer called (ip=%s)", ipAddress))
 
 	if ipAddress == "" {
@@ -882,7 +950,9 @@ func (a *App) SavePeer(ipAddress string) error {
 }
 
 func (a *App) RemovePeer(ipAddress string) error {
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	a.log(logger.Debug, "ipc", fmt.Sprintf("RemovePeer called (ip=%s)", ipAddress))
 
 	newList := make([]string, 0, len(a.savedPeers))
@@ -931,7 +1001,9 @@ func (a *App) LoadPeersConfig(dataDir string) error {
 }
 
 func (a *App) ShareDirectory(path string) error {
-	if err := a.checkLoggedIn(); err != nil { return err }
+	if err := a.checkLoggedIn(); err != nil {
+		return err
+	}
 	a.log(logger.Debug, "ipc", fmt.Sprintf("ShareDirectory called (path=%s)", path))
 	if err := a.requireFileEngine(); err != nil {
 		a.log(logger.Warning, "ipc", fmt.Sprintf("ShareDirectory failed: %v", err))
@@ -1122,7 +1194,9 @@ func (a *App) StartDownload(targetUUID, virtualPath, localSavePath string) error
 }
 
 func (a *App) GetDefaultDownloadDir() (string, error) {
-	if err := a.checkLoggedIn(); err != nil { return "", err }
+	if err := a.checkLoggedIn(); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return os.TempDir(), nil

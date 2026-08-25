@@ -2,9 +2,14 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -395,5 +400,245 @@ func TestStdioServerFlushBehavior(t *testing.T) {
 	json.Unmarshal(scanner.Bytes(), &r2)
 	if r2["result"] != "second" {
 		t.Fatalf("expected 'second', got %v", r2["result"])
+	}
+}
+
+// TestStdioServerStopIdempotent verifies that Stop can be called any number
+// of times, sequentially or concurrently, without panicking.
+func TestStdioServerStopIdempotent(t *testing.T) {
+	server := NewStdioServer()
+
+	server.Stop()
+	server.Stop()
+	server.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server.Stop()
+		}()
+	}
+	wg.Wait()
+}
+
+// TestStdioServerHandlerPanic verifies that a panicking handler is converted
+// into a JSON-RPC internal error (-32603) instead of crashing the process.
+func TestStdioServerHandlerPanic(t *testing.T) {
+	restore := saveGlobals()
+	defer restore()
+
+	registeredMethods = map[string]MethodHandler{
+		"boom": func(params json.RawMessage) (any, error) {
+			panic("kaboom")
+		},
+	}
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewStdioServer()
+	server.writer = bufio.NewWriter(stdoutW)
+
+	server.dispatch([]byte(`{"jsonrpc":"2.0","id":7,"method":"boom"}`))
+
+	resultCh := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdoutR)
+		if scanner.Scan() {
+			resultCh <- scanner.Text()
+		}
+	}()
+
+	select {
+	case raw := <-resultCh:
+		var resp map[string]any
+		if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+		errData, ok := resp["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected error object in response, got: %v", raw)
+		}
+		code, ok := errData["code"].(float64)
+		if !ok {
+			t.Fatalf("expected numeric error code, got: %v", errData["code"])
+		}
+		if code != -32603 {
+			t.Fatalf("expected internal error code -32603, got %v", code)
+		}
+		msg, _ := errData["message"].(string)
+		if !strings.Contains(msg, "kaboom") {
+			t.Fatalf("expected panic message in error, got: %v", errData["message"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for error response")
+	}
+}
+
+// TestStdioServerStopDrainsInFlight verifies that Stop blocks until every
+// in-flight dispatch has completed and written its response, so the caller
+// can exit without losing responses.
+func TestStdioServerStopDrainsInFlight(t *testing.T) {
+	restore := saveGlobals()
+	defer restore()
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = stdinR
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	registeredMethods = map[string]MethodHandler{
+		"slow": func(params json.RawMessage) (any, error) {
+			close(started)
+			<-release
+			return "done", nil
+		},
+	}
+
+	server := NewStdioServer()
+	server.writer = bufio.NewWriter(stdoutW)
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"slow"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	<-started // handler is now in flight
+
+	stopDone := make(chan struct{})
+	go func() {
+		server.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while a dispatch was still in flight")
+	case <-time.After(100 * time.Millisecond):
+		// Stop is blocked on the in-flight dispatch, as required.
+	}
+
+	close(release)
+
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return after the in-flight dispatch finished")
+	}
+
+	// The drained dispatch must have flushed its response before Stop
+	// returned, so it is already readable on stdout.
+	scanner := bufio.NewScanner(stdoutR)
+	if !scanner.Scan() {
+		t.Fatal("expected the drained dispatch's response on stdout")
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		t.Fatalf("drained response unmarshal: %v", err)
+	}
+	if resp["result"] != "done" {
+		t.Fatalf("expected result 'done', got %v", resp["result"])
+	}
+
+	// Deliver EOF so the read loop can exit; Exited must close.
+	stdinW.Close()
+	select {
+	case <-server.Exited():
+	case <-time.After(2 * time.Second):
+		t.Fatal("read loop did not exit after EOF")
+	}
+}
+
+// stdioServerEOFChild runs in a subprocess: it starts a StdioServer, delivers
+// EOF on stdin, and prints a marker only after the read loop has exited
+// cleanly. If the read loop calls os.Exit on EOF, the marker is never printed
+// and the parent test fails.
+func stdioServerEOFChild(t *testing.T) {
+	restore := saveGlobals()
+	defer restore()
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = stdinR
+
+	server := NewStdioServer()
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdinW.Close() // deliver EOF
+
+	select {
+	case <-server.Exited():
+	case <-time.After(3 * time.Second):
+		t.Fatal("read loop did not exit after EOF")
+	}
+
+	// Reaching this line proves the read loop returned instead of calling
+	// os.Exit. The parent asserts on this marker.
+	fmt.Println("readLoop-exited-cleanly")
+}
+
+// TestStdioServerEOFExitsCleanly proves that EOF on stdin makes the read loop
+// return without terminating the process. It runs the server in a child
+// process, because the old implementation called os.Exit(0) which would
+// silently kill the test binary.
+func TestStdioServerEOFExitsCleanly(t *testing.T) {
+	if os.Getenv("STDIO_SERVER_EOF_CHILD") == "1" {
+		stdioServerEOFChild(t)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestStdioServerEOFExitsCleanly")
+	cmd.Env = append(os.Environ(), "STDIO_SERVER_EOF_CHILD=1")
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// The child replaces os.Stdin with its own pipe; close our end so the
+	// child never blocks on the harness pipe.
+	stdin.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("child exited with error: %v\nstderr: %s", err, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("child did not exit after stdin EOF (read loop hung?)")
+	}
+
+	if !strings.Contains(stdout.String(), "readLoop-exited-cleanly") {
+		t.Fatalf("child exited before the read loop returned cleanly (os.Exit in read loop?)\nstdout: %s\nstderr: %s",
+			stdout.String(), stderr.String())
 	}
 }

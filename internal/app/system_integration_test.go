@@ -2,6 +2,7 @@
 
 import (
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -88,29 +89,47 @@ func (u *IntegrationMockUI) GetLastEvent() string {
 	return u.LastEvent
 }
 
-func TestSystem_CompleteUserFlow(t *testing.T) {
-	dbFile := "./integration_test.db"
-	idFile := "./.parade_identity"
-	_ = os.Remove(dbFile)
-	_ = os.Remove(idFile)
-	defer func() {
-		_ = os.Remove(dbFile)
-		_ = os.Remove(idFile)
-	}()
+// integrationFixture isolates one identity's files (DB, identity, team keys)
+// inside a unique temp directory, so tests never mutate the shared CWD.
+type integrationFixture struct {
+	dir       string
+	dbFile    string
+	idFile    string
+	teamsFile string
+}
 
-	bus := eventbus.New()
-	cry := crypto.NewEngine()
-	database, err := db.NewSQLiteDB(dbFile)
+func newIntegrationFixture(t *testing.T) *integrationFixture {
+	t.Helper()
+	dir := t.TempDir()
+	return &integrationFixture{
+		dir:       dir,
+		dbFile:    filepath.Join(dir, "parade.db"),
+		idFile:    filepath.Join(dir, ".parade_identity"),
+		teamsFile: filepath.Join(dir, ".parade_teams"),
+	}
+}
+
+func newIntegrationApp(t *testing.T, fx *integrationFixture, bus eventbus.EventBus, cry crypto.Engine, net *IntegrationMockNetwork, ui *IntegrationMockUI) (*app.App, db.Database) {
+	t.Helper()
+	database, err := db.NewSQLiteDB(fx.dbFile)
 	if err != nil {
 		t.Fatalf("Failed to init DB: %v", err)
 	}
-
-	mockNet := &IntegrationMockNetwork{}
-	mockFile := &IntegrationMockFile{}
-	mockUI := &IntegrationMockUI{}
-
-	application := app.NewApp(bus, cry, database, mockNet, mockFile, mockUI, nil)
+	application := app.NewApp(bus, cry, database, net, &IntegrationMockFile{}, ui, nil).
+		WithIdentityPath(fx.idFile).
+		WithTeamKeysPath(fx.teamsFile)
 	application.Startup()
+	return application, database
+}
+
+func TestSystem_CompleteUserFlow(t *testing.T) {
+	fx := newIntegrationFixture(t)
+
+	bus := eventbus.New()
+	cry := crypto.NewEngine(crypto.WithTeamKeysFile(fx.teamsFile))
+	mockNet := &IntegrationMockNetwork{}
+	mockUI := &IntegrationMockUI{}
+	application, database := newIntegrationApp(t, fx, bus, cry, mockNet, mockUI)
 
 	pwd := "safe_password_123"
 
@@ -162,12 +181,11 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 		database.Close()
 
 		newBus := eventbus.New()
-		newCry := crypto.NewEngine()
-		newDB, _ := db.NewSQLiteDB(dbFile)
+		newCry := crypto.NewEngine(crypto.WithTeamKeysFile(fx.teamsFile))
 		newUI := &IntegrationMockUI{}
 
-		newApp := app.NewApp(newBus, newCry, newDB, mockNet, mockFile, newUI, nil)
-		newApp.Startup()
+		newApp, newDB := newIntegrationApp(t, fx, newBus, newCry, mockNet, newUI)
+		defer newDB.Close()
 
 		if err := newApp.Login(pwd); err != nil {
 			t.Fatalf("Login after restart failed: %v", err)
@@ -187,34 +205,18 @@ func TestSystem_CompleteUserFlow(t *testing.T) {
 // TestSystem_JoinTeamReusesUUID verifies that re-joining with the same team secret
 // reuses the existing team UUID instead of generating a new one (Issue 1 fix).
 func TestSystem_JoinTeamReusesUUID(t *testing.T) {
-	dbFile := "./integration_test.db"
-	idFile := "./.parade_identity"
-	teamsFile := "./.parade_teams"
-	_ = os.Remove(dbFile)
-	_ = os.Remove(idFile)
-	_ = os.Remove(teamsFile)
-	defer func() {
-		_ = os.Remove(dbFile)
-		_ = os.Remove(idFile)
-		_ = os.Remove(teamsFile)
-	}()
+	fx := newIntegrationFixture(t)
 
 	pwd := "safe_password_123"
 	secret := "team_reuse_test_secret"
 
 	// Round 1: create identity, join team, record UUID
 	bus1 := eventbus.New()
-	cry1 := crypto.NewEngine()
-	db1, err := db.NewSQLiteDB(dbFile)
-	if err != nil {
-		t.Fatalf("Failed to init DB: %v", err)
-	}
+	cry1 := crypto.NewEngine(crypto.WithTeamKeysFile(fx.teamsFile))
 	mockNet := &IntegrationMockNetwork{}
-	mockFile := &IntegrationMockFile{}
 	mockUI := &IntegrationMockUI{}
 
-	app1 := app.NewApp(bus1, cry1, db1, mockNet, mockFile, mockUI, nil)
-	app1.Startup()
+	app1, db1 := newIntegrationApp(t, fx, bus1, cry1, mockNet, mockUI)
 
 	if err := app1.Register(pwd); err != nil {
 		t.Fatalf("Register failed: %v", err)
@@ -231,16 +233,11 @@ func TestSystem_JoinTeamReusesUUID(t *testing.T) {
 
 	// Round 2: new app on same DB, login, join with same secret — should get same UUID
 	bus2 := eventbus.New()
-	cry2 := crypto.NewEngine()
-	db2, err := db.NewSQLiteDB(dbFile)
-	if err != nil {
-		t.Fatalf("Failed to reopen DB: %v", err)
-	}
+	cry2 := crypto.NewEngine(crypto.WithTeamKeysFile(fx.teamsFile))
 	mockNet2 := &IntegrationMockNetwork{}
 	mockUI2 := &IntegrationMockUI{}
 
-	app2 := app.NewApp(bus2, cry2, db2, mockNet2, mockFile, mockUI2, nil)
-	app2.Startup()
+	app2, db2 := newIntegrationApp(t, fx, bus2, cry2, mockNet2, mockUI2)
 
 	if err := app2.Login(pwd); err != nil {
 		t.Fatalf("Login failed: %v", err)
@@ -260,30 +257,17 @@ func TestSystem_JoinTeamReusesUUID(t *testing.T) {
 // TestSystem_LoginAutoStartsNetwork verifies that Login starts the network
 // engine when restored team keys exist (Issue 2 fix).
 func TestSystem_LoginAutoStartsNetwork(t *testing.T) {
-	dbFile := "./integration_test.db"
-	idFile := "./.parade_identity"
-	teamsFile := "./.parade_teams"
-	_ = os.Remove(dbFile)
-	_ = os.Remove(idFile)
-	_ = os.Remove(teamsFile)
-	defer func() {
-		_ = os.Remove(dbFile)
-		_ = os.Remove(idFile)
-		_ = os.Remove(teamsFile)
-	}()
+	fx := newIntegrationFixture(t)
 
 	pwd := "safe_password_123"
 
-	// Create identity, join team so .parade_teams exists
+	// Create identity, join team so .parade_teams exists in the fixture dir
 	bus1 := eventbus.New()
-	cry1 := crypto.NewEngine()
-	db1, _ := db.NewSQLiteDB(dbFile)
+	cry1 := crypto.NewEngine(crypto.WithTeamKeysFile(fx.teamsFile))
 	mockNet := &IntegrationMockNetwork{}
-	mockFile := &IntegrationMockFile{}
 	mockUI := &IntegrationMockUI{}
 
-	app1 := app.NewApp(bus1, cry1, db1, mockNet, mockFile, mockUI, nil)
-	app1.Startup()
+	app1, db1 := newIntegrationApp(t, fx, bus1, cry1, mockNet, mockUI)
 	app1.Register(pwd)
 	app1.Login(pwd)
 	app1.JoinTeamWithName("Auto Team", "auto_secret")
@@ -291,13 +275,11 @@ func TestSystem_LoginAutoStartsNetwork(t *testing.T) {
 
 	// New app: Login should trigger Start
 	bus2 := eventbus.New()
-	cry2 := crypto.NewEngine()
-	db2, _ := db.NewSQLiteDB(dbFile)
+	cry2 := crypto.NewEngine(crypto.WithTeamKeysFile(fx.teamsFile))
 	mockNet2 := &IntegrationMockNetwork{}
 	mockUI2 := &IntegrationMockUI{}
 
-	app2 := app.NewApp(bus2, cry2, db2, mockNet2, mockFile, mockUI2, nil)
-	app2.Startup()
+	app2, db2 := newIntegrationApp(t, fx, bus2, cry2, mockNet2, mockUI2)
 
 	if err := app2.Login(pwd); err != nil {
 		t.Fatalf("Login failed: %v", err)
@@ -312,32 +294,16 @@ func TestSystem_LoginAutoStartsNetwork(t *testing.T) {
 // TestSystem_NoDuplicateOnSelfSender verifies that messages from self
 // published on the event bus are not persisted a second time (Issue 4 fix).
 func TestSystem_NoDuplicateOnSelfSender(t *testing.T) {
-	dbFile := "./integration_test.db"
-	idFile := "./.parade_identity"
-	teamsFile := "./.parade_teams"
-	_ = os.Remove(dbFile)
-	_ = os.Remove(idFile)
-	_ = os.Remove(teamsFile)
-	defer func() {
-		_ = os.Remove(dbFile)
-		_ = os.Remove(idFile)
-		_ = os.Remove(teamsFile)
-	}()
+	fx := newIntegrationFixture(t)
 
 	pwd := "safe_password_123"
 	bus := eventbus.New()
-	cry := crypto.NewEngine()
-	database, err := db.NewSQLiteDB(dbFile)
-	if err != nil {
-		t.Fatalf("Failed to init DB: %v", err)
-	}
-
+	cry := crypto.NewEngine(crypto.WithTeamKeysFile(fx.teamsFile))
 	mockNet := &IntegrationMockNetwork{}
-	mockFile := &IntegrationMockFile{}
 	mockUI := &IntegrationMockUI{}
 
-	application := app.NewApp(bus, cry, database, mockNet, mockFile, mockUI, nil)
-	application.Startup()
+	application, database := newIntegrationApp(t, fx, bus, cry, mockNet, mockUI)
+	defer database.Close()
 
 	if err := application.Register(pwd); err != nil {
 		t.Fatalf("Register failed: %v", err)
@@ -389,5 +355,60 @@ func TestSystem_NoDuplicateOnSelfSender(t *testing.T) {
 		if countAfter != countBefore {
 			t.Errorf("Self-published message was not deduplicated: before=%d after=%d", countBefore, countAfter)
 		}
+	}
+}
+
+// TestSystem_IsolatedDataDirs verifies that two apps with distinct data
+// directories never share team keys or team-key files, even when both
+// identities use the same password (identical master key).
+func TestSystem_IsolatedDataDirs(t *testing.T) {
+	fxA := newIntegrationFixture(t)
+	fxB := newIntegrationFixture(t)
+
+	pwd := "same_password_for_both"
+	secret := "team_secret_of_A"
+
+	// App A: register, join a team — team keys must persist into A's dir only.
+	busA := eventbus.New()
+	cryA := crypto.NewEngine(crypto.WithTeamKeysFile(fxA.teamsFile))
+	appA, dbA := newIntegrationApp(t, fxA, busA, cryA, &IntegrationMockNetwork{}, &IntegrationMockUI{})
+	defer dbA.Close()
+
+	if err := appA.Register(pwd); err != nil {
+		t.Fatalf("Register A failed: %v", err)
+	}
+	if err := appA.Login(pwd); err != nil {
+		t.Fatalf("Login A failed: %v", err)
+	}
+	if _, err := appA.JoinTeamWithName("Team A", secret); err != nil {
+		t.Fatalf("JoinTeamWithName A failed: %v", err)
+	}
+
+	if _, err := os.Stat(fxA.teamsFile); err != nil {
+		t.Errorf("teams file missing in A's data dir: %v", err)
+	}
+
+	// App B: same password, different data dir — must not see A's team keys.
+	busB := eventbus.New()
+	cryB := crypto.NewEngine(crypto.WithTeamKeysFile(fxB.teamsFile))
+	appB, dbB := newIntegrationApp(t, fxB, busB, cryB, &IntegrationMockNetwork{}, &IntegrationMockUI{})
+	defer dbB.Close()
+
+	if err := appB.Register(pwd); err != nil {
+		t.Fatalf("Register B failed: %v", err)
+	}
+	if err := appB.Login(pwd); err != nil {
+		t.Fatalf("Login B failed: %v", err)
+	}
+
+	teams, err := appB.ListTeams()
+	if err != nil {
+		t.Fatalf("ListTeams B failed: %v", err)
+	}
+	if len(teams) != 0 {
+		t.Errorf("team keys leaked across data dirs: B sees %v", teams)
+	}
+	if _, err := os.Stat(fxB.teamsFile); !os.IsNotExist(err) {
+		t.Errorf("B's data dir must not contain a teams file (stat err=%v)", err)
 	}
 }
