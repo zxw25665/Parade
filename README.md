@@ -39,7 +39,7 @@ cmd/parade/           CLI 入口（daemon、version）
     └── lockfile.go       单实例锁（跨平台文件锁）
 
 internal/
-├── app/               业务编排层，JSON-RPC API（36 个方法）
+├── app/               业务编排层，JSON-RPC API（37 个方法）
 │   ├── app.go             Register、Login、JoinTeam、SendTeamChat 等
 │   ├── interfaces.go      NetworkEngine、FileEngine、Frontend 接口定义
 │   ├── hlc.go             混合逻辑时钟生成器
@@ -130,18 +130,18 @@ Parade 使用**稀疏时间桶默克尔树**进行会话同步：
 pixi run test              # 所有单元测试
 pixi run test-sync         # 同步包测试（41 个用例）
 pixi run test-sync-bench   # 同步性能基准（9 个）
-pixi run test-all          # 完整测试套件（30 项，6 个阶段）
-pixi run test-backend      # 后端修复验证（21 项检查）
+pixi run test-all          # 完整测试套件（构建 + 单测 + race + vet + 集群）
+pixi run test-backend      # 后端修复验证（go test + race + vet）
 ```
 
-| 阶段 | 内容 | 数量 |
-|------|------|------|
-| 构建 | 编译二进制 | 1 |
-| 单元测试 | `pixi run test`（10 个包） | 10 |
-| 性能基准 | 9 个同步基准测试 | 9 |
-| 正确性 | 3 节点/5 节点同步、边界情况 | 18 |
-| 集群 | 5 节点集成测试（分区容错） | ~80 步 |
-| 架构 | 文件存在性、模型、vet | 12 |
+Windows 上 `test-all` / `test-cluster` / `test-backend` 自动走 `tests/*.ps1`（PowerShell），Linux/macOS 走 `tests/*.sh`（bash）。
+
+- **单元测试**：10 个 Go 包（`go test ./...`）
+- **性能基准**：9 个同步基准测试
+- **集群集成**：5 节点同步/分区容错（sync、network、app 三包集成）
+- **前端 E2E**：`pixi run frontend-test` — Playwright 驱动真实 daemon（stdio IPC + WebSocket 代理），覆盖认证/聊天/团队/文件流程
+
+功能覆盖契约与多节点进程级测试进度见 `docs/coverage-contract.md` 与 `docs/多节点实际测试方案.md`。
 
 ### 关键正确性测试
 

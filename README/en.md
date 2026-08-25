@@ -37,14 +37,14 @@ cmd/parade/           CLI entrypoint (daemon, version)
     └── lockfile.go       Single-instance lock (cross-platform)
 
 internal/
-├── app/               Business orchestration, JSON-RPC API (36 methods)
+├── app/               Business orchestration, JSON-RPC API (37 methods)
 │   ├── app.go             Register, Login, JoinTeam, SendTeamChat, etc.
 │   ├── interfaces.go      NetworkEngine, FileEngine, Frontend contracts
 │   ├── hlc.go             Hybrid Logical Clock generator
 │   ├── derived_id.go      Deterministic UUID derivation
 │   ├── jsonrpc.go         Method registry (reflection-based dispatch)
-│   ├── uds_ui.go          UDS broadcast to frontend clients
-│   └── uds_listener.go    UDS accept loop + JSON-RPC dispatcher
+│   ├── uds_ui.go          stdio event push to frontend
+│   └── stdio_server.go    stdio receive loop + JSON-RPC dispatch
 ├── core/
 │   ├── sync/              Sparse Time Bucket Merkle Tree sync algorithm
 │   │   ├── timebucket.go      HLC → bucket path derivation
@@ -83,7 +83,6 @@ parade daemon [flags]
   --debug        Multi-instance allowed, custom P2P interface
   --production   Force loopback P2P, single-instance lock
   --data-dir     Data directory (default: ./.parade_data)
-  --uds          IPC path (Unix: socket path, Windows: pipe name)
   --port         P2P listen port (default: 4327)
   --listen       P2P listen address (default: 127.0.0.1)
   --mdns         Enable mDNS peer discovery (default: enabled)
@@ -92,7 +91,7 @@ parade daemon [flags]
 
 ## IPC Protocol
 
-JSON-RPC 2.0 over IPC (Unix domain socket / Windows named pipe), newline-delimited.
+JSON-RPC 2.0 over stdio, newline-delimited.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"SendTeamChat","params":["hello"]}
@@ -126,18 +125,21 @@ Protocol: `/parade/merklesync/1.0.0` (6 message types, 30s timeout)
 ## Test Suite
 
 ```bash
-./tests/test_all.sh          # 30 tests across 6 phases
-./tests/test_backend_fixes.sh # Backend fixes verification (21 checks)
+pixi run test              # All unit tests
+pixi run test-sync         # Sync package tests (41 cases)
+pixi run test-sync-bench   # Sync performance benchmarks (9)
+pixi run test-all          # Full suite (build + unit + race + vet + cluster)
+pixi run test-backend      # Backend fixes verification (go test + race + vet)
 ```
 
-| Phase | What | Count |
-|-------|------|-------|
-| Build | Compile binary | 1 |
-| Unit | `go test ./...` (7 packages) | 7 |
-| Benchmarks | 9 sync benchmarks | 9 |
-| Correctness | 3-node/5-node sync, edge cases | 18 |
-| Cluster | 5-node integration (partition tolerance) | ~80 steps |
-| Architecture | File existence, models, vet | 12 |
+On Windows `test-all` / `test-cluster` / `test-backend` run through `tests/*.ps1` (PowerShell); on Linux/macOS through `tests/*.sh` (bash).
+
+- **Unit tests**: 10 Go packages (`go test ./...`)
+- **Benchmarks**: 9 sync benchmarks
+- **Cluster integration**: 5-node sync/partition tolerance (sync, network, app)
+- **Frontend E2E**: `pixi run frontend-test` — Playwright drives a real daemon (stdio IPC + WebSocket proxy), covering auth/chat/team/files flows
+
+Coverage contract and multi-node process-level test progress: `docs/coverage-contract.md` and `docs/多节点实际测试方案.md`.
 
 ### Key Correctness Tests
 
@@ -174,7 +176,7 @@ Protocol: `/parade/merklesync/1.0.0` (6 message types, 30s timeout)
 | Database | modernc.org/sqlite | Pure Go, no CGO, WAL mode |
 | P2P | libp2p | Battle-tested, protocol streams, NAT traversal |
 | Crypto | AES-256-GCM, Curve25519, Argon2id, BLAKE3 | Standard, audited, no surprises |
-| IPC | JSON-RPC 2.0 over UDS/named pipe | Simple, debuggable, language-agnostic |
+| IPC | JSON-RPC 2.0 over stdio | Simple, debuggable, language-agnostic |
 | Frontend | Tauri/Vue3 | Rust IPC bridge + Vue3 UI, in `frontend/` |
 
 ## Key Conventions
@@ -195,7 +197,7 @@ pixi run build-release      # Build production release (deb/dmg/msi)
 pixi run test               # All unit tests
 pixi run test-sync          # Sync tests (41 tests)
 pixi run test-sync-bench    # Sync benchmarks
-pixi run test-all           # Full test suite (30 tests, 6 phases)
+pixi run test-all           # Full test suite (build + unit + race + vet + cluster)
 pixi run clean              # Clean build artifacts
 ```
 
