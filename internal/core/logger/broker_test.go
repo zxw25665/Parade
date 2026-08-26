@@ -301,6 +301,131 @@ func TestLogBroker_Concurrent(t *testing.T) {
 		len(entries), numGoroutines, entriesPerGoroutine)
 }
 
+func TestNewLogBroker_RejectsNonPositiveMaxEntries(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, tc := range []struct {
+		name       string
+		maxEntries int
+	}{
+		{name: "zero", maxEntries: 0},
+		{name: "negative", maxEntries: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			filePath := filepath.Join(dir, tc.name+".log")
+
+			lb, err := NewLogBroker(filePath, tc.maxEntries)
+			if err == nil {
+				t.Fatalf("NewLogBroker(maxEntries=%d) should return an error", tc.maxEntries)
+			}
+			if lb != nil {
+				t.Fatal("NewLogBroker should return a nil broker for non-positive maxEntries")
+			}
+			if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+				t.Errorf("log file should not be created for maxEntries=%d", tc.maxEntries)
+			}
+		})
+	}
+}
+
+func TestLogBroker_LogAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.log")
+
+	lb, err := NewLogBroker(filePath, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb.SetMinLevel(Trace)
+
+	lb.Info("src", "before close")
+
+	if err := lb.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	// Logging after Close must not panic and must not write to the file.
+	lb.Trace("src", "after close trace")
+	lb.Info("src", "after close info")
+	lb.Warn("src", "after close warn")
+	lb.Error("src", "after close error")
+
+	lines := readLogLines(t, filePath)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line in log file after Close, got %d", len(lines))
+	}
+}
+
+func TestLogBroker_ConcurrentConfigAndLogging(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.log")
+
+	lb, err := NewLogBroker(filePath, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lb.Close()
+
+	levels := []LogLevel{Trace, Debug, Info, Warning, Error}
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+
+	go func() {
+		defer wg.Done()
+		for i := range 100 {
+			lb.SetMinLevel(levels[i%len(levels)])
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			lb.SetCallback(func(LogEntry) {})
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			lb.Info("cfg", "concurrent info")
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			lb.Warn("cfg", "concurrent warn")
+		}
+	}()
+
+	wg.Wait()
+
+	entries := lb.Entries()
+	if len(entries) > lb.maxEntries {
+		t.Fatalf("entries count %d exceeds maxEntries %d", len(entries), lb.maxEntries)
+	}
+}
+
+func readLogLines(t *testing.T, filePath string) []string {
+	t.Helper()
+	f, err := os.Open(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return lines
+}
+
 func TestLogLevel_String(t *testing.T) {
 	tests := []struct {
 		level    LogLevel

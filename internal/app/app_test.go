@@ -1,9 +1,10 @@
-﻿package app
+package app
 
 import (
 	"context"
 	"encoding/json"
-	"os"
+	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -17,22 +18,23 @@ import (
 )
 
 type MockNetwork struct {
-	LastPayload []byte
+	LastPayload  []byte
+	BroadcastErr error
 }
 
 func (m *MockNetwork) Start(p int) error { return nil }
-func (m *MockNetwork) Stop() error { return nil }
+func (m *MockNetwork) Stop() error       { return nil }
 func (m *MockNetwork) BroadcastTeam(b []byte) error {
 	m.LastPayload = b
-	return nil
+	return m.BroadcastErr
 }
 func (m *MockNetwork) BroadcastChannel(channelID string, b []byte) error {
 	m.LastPayload = b
 	return nil
 }
 func (m *MockNetwork) UnicastPrivate(t string, b []byte) error { return nil }
-func (m *MockNetwork) Peers() []map[string]string { return nil }
-func (m *MockNetwork) StartDownload(t, v, l string) error { return nil }
+func (m *MockNetwork) Peers() []map[string]string              { return nil }
+func (m *MockNetwork) StartDownload(t, v, l string) error      { return nil }
 func (m *MockNetwork) ConnectToPeer(ip string) (*network.PeerConnectResult, error) {
 	return &network.PeerConnectResult{
 		IP:     ip,
@@ -41,10 +43,12 @@ func (m *MockNetwork) ConnectToPeer(ip string) (*network.PeerConnectResult, erro
 		Phase2: network.PhaseResult{Success: true, Label: "队伍相同"},
 	}, nil
 }
-func (m *MockNetwork) OnForeground() {}
+func (m *MockNetwork) OnForeground()                                                 {}
 func (m *MockNetwork) SendConvSyncRequest(targetUUID, convID, sinceHLC string) error { return nil }
-func (m *MockNetwork) SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error { return nil }
-func (m *MockNetwork) SavePeers() error { return nil }
+func (m *MockNetwork) SendConvSyncResponse(targetUUID, convID string, messagesJSON []byte) error {
+	return nil
+}
+func (m *MockNetwork) SavePeers() error                      { return nil }
 func (m *MockNetwork) PeersWithStatus() []network.PeerStatus { return nil }
 func (m *MockNetwork) BrowseRemoteDirectory(targetUUID, path string) ([]*network.BrowseEntry, error) {
 	return nil, nil
@@ -58,22 +62,25 @@ func (m *MockNetwork) SendBucketCompareRequest(targetUUID, convID string, level 
 func (m *MockNetwork) SendFetchMessagesRequest(targetUUID, convID, bucketPath, sinceHLC string) ([]*db.Message, error) {
 	return nil, nil
 }
-func (m *MockNetwork) SendPushMessages(targetUUID, convID string, messages []*db.Message) error { return nil }
+func (m *MockNetwork) SendPushMessages(targetUUID, convID string, messages []*db.Message) error {
+	return nil
+}
 func (m *MockNetwork) SetMerkleSyncHandler(handler syncpkg.MerkleSyncHandler) {}
-func (m *MockNetwork) ResolveUUID(uuid string) (string, error) { return "mock_resolved_pubkey", nil }
+func (m *MockNetwork) ResolveUUID(uuid string) (string, error)                { return "mock_resolved_pubkey", nil }
 
 type MockFile struct{}
 
-func (m *MockFile) GetVirtualTree(p string) (interface{}, error) { return nil, nil }
-func (m *MockFile) ShareDirectory(p string) error { return nil }
-func (m *MockFile) UnshareDirectory(p string) error { return nil }
+func (m *MockFile) GetVirtualTree(p string) (interface{}, error)       { return nil, nil }
+func (m *MockFile) ShareDirectory(p string) error                      { return nil }
+func (m *MockFile) UnshareDirectory(p string) error                    { return nil }
 func (m *MockFile) GetDirectoryChildren(p string) (interface{}, error) { return nil, nil }
-func (m *MockFile) GetSharedRoots() []string { return nil }
+func (m *MockFile) GetSharedRoots() []string                           { return nil }
 
 type MockUI struct {
 	mu        sync.Mutex
 	EventName string
 	Payload   interface{}
+	NotifyCh  chan struct{}
 }
 
 func (m *MockUI) Notify(name string, data interface{}) {
@@ -81,6 +88,12 @@ func (m *MockUI) Notify(name string, data interface{}) {
 	m.EventName = name
 	m.Payload = data
 	m.mu.Unlock()
+	if m.NotifyCh != nil {
+		select {
+		case m.NotifyCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (m *MockUI) GetEventName() string {
@@ -96,24 +109,28 @@ func (m *MockUI) GetPayload() interface{} {
 }
 
 func setup(t *testing.T) (*App, *MockNetwork, *MockUI, func()) {
-	dbP, idP := "./test.db", "./test.id"
-	_ = os.Remove(dbP)
-	_ = os.Remove(idP)
+	dir := t.TempDir()
+	dbP := filepath.Join(dir, "test.db")
+	idP := filepath.Join(dir, ".parade_identity")
+	tmP := filepath.Join(dir, ".parade_teams")
 
 	eb := eventbus.New()
-	cr := crypto.NewEngine()
-	d, _ := db.NewSQLiteDB(dbP)
+	cr := crypto.NewEngine(crypto.WithTeamKeysFile(tmP))
+	d, err := db.NewSQLiteDB(dbP)
+	if err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
 	net := &MockNetwork{}
 	file := &MockFile{}
-	ui := &MockUI{}
+	ui := &MockUI{NotifyCh: make(chan struct{}, 16)}
 
-	app := NewApp(eb, cr, d, net, file, ui, nil)
+	app := NewApp(eb, cr, d, net, file, ui, nil).
+		WithIdentityPath(idP).
+		WithTeamKeysPath(tmP)
 	app.Startup()
 
 	return app, net, ui, func() {
 		d.Close()
-		os.Remove(dbP)
-		os.Remove(idP)
 	}
 }
 
@@ -147,7 +164,15 @@ func TestApp_FullFlow(t *testing.T) {
 	}
 	a.evBus.Publish(eventbus.TopicMsgReceived, incoming)
 
-	time.Sleep(100 * time.Millisecond)
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for ui.GetPayload() == nil || ui.GetPayload().(map[string]interface{})["content"] != "Incoming Message" {
+		select {
+		case <-ui.NotifyCh:
+		case <-deadline.C:
+			t.Fatal("timed out waiting for incoming UI event")
+		}
+	}
 
 	if ui.GetEventName() != "ui_new_message" {
 		t.Errorf("UI not notified, got %q", ui.GetEventName())
@@ -161,7 +186,6 @@ func TestApp_FullFlow(t *testing.T) {
 func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 	a, _, _, cleanup := setup(t)
 	defer cleanup()
-	defer os.Remove(DefaultIdentityFile)
 
 	_ = a.Register("123")
 	_ = a.Login("123")
@@ -192,7 +216,6 @@ func TestGetRecentHistory_CorruptedMessage(t *testing.T) {
 func TestSendTeamChat_ReceiverID(t *testing.T) {
 	a, _, _, cleanup := setup(t)
 	defer cleanup()
-	defer os.Remove(DefaultIdentityFile)
 
 	_ = a.Register("123")
 	_ = a.Login("123")
@@ -208,5 +231,26 @@ func TestSendTeamChat_ReceiverID(t *testing.T) {
 	}
 	if msgs[0].ReceiverID != db.ReceiverIDGroupChat {
 		t.Errorf("expected ReceiverID to be %q, got %q", db.ReceiverIDGroupChat, msgs[0].ReceiverID)
+	}
+}
+
+func TestSendTeamChat_PropagatesNetworkFailure(t *testing.T) {
+	a, net, _, cleanup := setup(t)
+	defer cleanup()
+
+	if err := a.Register("123"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := a.Login("123"); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if err := a.JoinTeam("team"); err != nil {
+		t.Fatalf("join team: %v", err)
+	}
+
+	wantErr := errors.New("network unavailable")
+	net.BroadcastErr = wantErr
+	if err := a.SendTeamChat("will fail remotely"); !errors.Is(err, wantErr) {
+		t.Fatalf("SendTeamChat error = %v, want %v", err, wantErr)
 	}
 }

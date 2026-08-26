@@ -21,10 +21,7 @@ import (
 	merkleSync "parade/internal/core/sync"
 )
 
-const (
-	protocolIdentify = "/parade/identify/1.0.0"
-	peersFile        = "./.parade_peers"
-)
+const protocolIdentify = "/parade/identify/1.0.0"
 
 type peerIdentity struct {
 	UUID   string
@@ -54,14 +51,24 @@ type libp2pEngine struct {
 	identifyLn   net.Listener
 	fileEngine   FileTransferEngine
 	merkleSyncH  merkleSync.MerkleSyncHandler
+	peersFile    string
 }
 
 func NewLibp2pEngine(bus eventbus.EventBus, cry crypto.Engine, logr logger.Logger) *libp2pEngine {
 	return &libp2pEngine{
-		bus:    bus,
-		crypto: cry,
-		logr:   logr,
+		bus:       bus,
+		crypto:    cry,
+		logr:      logr,
+		peersFile: "./.parade_peers",
 	}
+}
+
+// SetPeersFile overrides the peer persistence file location so it does not
+// depend on the process working directory.
+func (e *libp2pEngine) SetPeersFile(path string) {
+	e.peerMu.Lock()
+	defer e.peerMu.Unlock()
+	e.peersFile = path
 }
 
 func (e *libp2pEngine) setPeer(pid peer.ID, uuid, pubkey string) {
@@ -644,11 +651,11 @@ func (e *libp2pEngine) savePeers() error {
 		})
 	}
 	data, _ := json.Marshal(list)
-	return os.WriteFile(peersFile, data, 0600)
+	return os.WriteFile(e.peersFile, data, 0600)
 }
 
 func (e *libp2pEngine) loadAndReconnect() {
-	data, err := os.ReadFile(peersFile)
+	data, err := os.ReadFile(e.peersFile)
 	if err != nil {
 		return
 	}

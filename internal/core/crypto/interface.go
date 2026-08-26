@@ -17,14 +17,16 @@ type Engine interface {
 	// 返回 LoadIdentity 期间收集的非致命警告（如队伍密钥文件损坏）
 	IdentityLoadWarnings() []error
 	SaveTeamKeys() error
+	// SetTeamKeysFile 配置队伍密钥持久化路径；空路径表示仅内存保存
+	SetTeamKeysFile(path string)
 	// 设置队伍口令，内部转换为队伍对称密钥
-	SetTeamKey(teamPassword string)
+	SetTeamKey(teamPassword string) error
 	// 返回队伍密钥的十六进制哈希，用于 mDNS TXT 同队过滤
 	TeamKeyHash() string
 
 	// ---- 多队伍密钥管理 ----
-	SetTeamKeyForTeam(teamID, teamPassword string)
-	RemoveTeamKey(teamID string)
+	SetTeamKeyForTeam(teamID, teamPassword string) error
+	RemoveTeamKey(teamID string) error
 	SetActiveTeam(teamID string) error
 	GetActiveTeam() string
 	GetTeamIDs() []string

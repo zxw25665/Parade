@@ -15,8 +15,8 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// TeamKeysFile 队伍密钥磁盘持久化路径
-const TeamKeysFile = "./.parade_teams"
+// TeamKeysFileName 队伍密钥磁盘持久化文件名（相对于数据目录）
+const TeamKeysFileName = ".parade_teams"
 
 // ---- 基础 AES-GCM 工具函数 ----
 
@@ -80,11 +80,11 @@ func (c *paradeCrypto) DecryptLocal(ciphertext[]byte) ([]byte, error) {
 
 // ---- 队伍网络加密实现 ----
 
-func (c *paradeCrypto) SetTeamKey(teamPassword string) {
-	c.SetTeamKeyForTeam("", teamPassword)
+func (c *paradeCrypto) SetTeamKey(teamPassword string) error {
+	return c.SetTeamKeyForTeam("", teamPassword)
 }
 
-func (c *paradeCrypto) SetTeamKeyForTeam(teamID, teamPassword string) {
+func (c *paradeCrypto) SetTeamKeyForTeam(teamID, teamPassword string) error {
 	if c.teamKeys == nil {
 		c.teamKeys = make(map[string][]byte)
 	}
@@ -93,10 +93,10 @@ func (c *paradeCrypto) SetTeamKeyForTeam(teamID, teamPassword string) {
 	if c.activeTeam == "" {
 		c.activeTeam = teamID
 	}
-	_ = c.SaveTeamKeys()
+	return c.SaveTeamKeys()
 }
 
-func (c *paradeCrypto) RemoveTeamKey(teamID string) {
+func (c *paradeCrypto) RemoveTeamKey(teamID string) error {
 	delete(c.teamKeys, teamID)
 	if c.activeTeam == teamID {
 		c.activeTeam = ""
@@ -105,7 +105,7 @@ func (c *paradeCrypto) RemoveTeamKey(teamID string) {
 			break
 		}
 	}
-	_ = c.SaveTeamKeys()
+	return c.SaveTeamKeys()
 }
 
 func (c *paradeCrypto) SetActiveTeam(teamID string) error {
@@ -113,8 +113,7 @@ func (c *paradeCrypto) SetActiveTeam(teamID string) error {
 		return fmt.Errorf("team key not found: %s", teamID)
 	}
 	c.activeTeam = teamID
-	_ = c.SaveTeamKeys()
-	return nil
+	return c.SaveTeamKeys()
 }
 
 func (c *paradeCrypto) GetActiveTeam() string {
@@ -220,6 +219,10 @@ func (c *paradeCrypto) SaveTeamKeys() error {
 	if c.masterKey == nil {
 		return nil
 	}
+	if c.teamKeysFile == "" {
+		// 未配置持久化路径：队伍密钥仅保存在内存中
+		return nil
+	}
 	data, err := json.Marshal(teamKeysPersist{Keys: c.teamKeys, ActiveTeam: c.activeTeam})
 	if err != nil {
 		return err
@@ -228,14 +231,25 @@ func (c *paradeCrypto) SaveTeamKeys() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(TeamKeysFile, encrypted, 0600)
+	return os.WriteFile(c.teamKeysFile, encrypted, 0600)
+}
+
+func (c *paradeCrypto) SetTeamKeysFile(path string) {
+	c.teamKeysFile = path
 }
 
 func (c *paradeCrypto) loadTeamKeys() error {
-	data, err := os.ReadFile(TeamKeysFile)
+	if c.teamKeysFile == "" {
+		// 未配置持久化路径：无可加载内容
+		return nil
+	}
+	data, err := os.ReadFile(c.teamKeysFile)
 	if err != nil {
 		// File not found is OK for new users
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read team keys file: %w", err)
 	}
 	plain, err := aesGCMDecrypt(c.masterKey, data)
 	if err != nil {

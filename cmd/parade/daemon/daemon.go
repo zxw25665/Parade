@@ -94,12 +94,16 @@ func Run(args []string) {
 	defer fileEngine.Close()
 
 	netEngine := network.NewLibp2pEngine(eventBus, cry, logBroker)
+	// Root peer persistence in the data directory so it does not depend on
+	// the process working directory.
+	netEngine.SetPeersFile(filepath.Join(dataDir, ".parade_peers"))
 	netEngine.AttachFileEngine(fileEngine)
 	defer netEngine.Stop()
 
 	identityPath := filepath.Join(dataDir, ".parade_identity")
 	appInstance := app.NewApp(eventBus, cry, database, netEngine, fileEngine, ui, logBroker).
 		WithIdentityPath(identityPath).
+		WithTeamKeysPath(filepath.Join(dataDir, crypto.TeamKeysFileName)).
 		WithMDNSEnabled(cfg.MDNSEnabled).
 		WithNetworkPort(cfg.Port).
 		WithNetworkListenAddr(cfg.ListenAddr)
@@ -124,11 +128,23 @@ func Run(args []string) {
 	log.Printf("[daemon] Parade %s started (pid=%d, data=%s, p2p=%s:%d, headless=%v, debug=%v, production=%v, mdns=%v)",
 		appVersion, os.Getpid(), dataDir, cfg.ListenAddr, cfg.Port, cfg.Headless, cfg.Debug, cfg.Production, cfg.MDNSEnabled)
 
-	// Wait for shutdown signal
+	// Wait for a shutdown signal, or for stdin EOF — the frontend closing
+	// its pipe. The stdio server never calls os.Exit itself; it reports
+	// exit via Exited() and the daemon owns the process-level decision.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	log.Printf("[daemon] received signal %v, shutting down...", sig)
+
+	var ipcExited <-chan struct{}
+	if srv, ok := ipcSrv.(interface{ Exited() <-chan struct{} }); ok {
+		ipcExited = srv.Exited()
+	}
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("[daemon] received signal %v, shutting down...", sig)
+	case <-ipcExited:
+		log.Println("[daemon] stdin EOF, shutting down...")
+	}
 
 	appInstance.Shutdown()
 	log.Println("[daemon] Parade stopped")
