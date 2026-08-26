@@ -4,33 +4,27 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
 
 // 测试配置
-const (
-	TestDBPath = "./test_parade_stress.db"
-)
-
 // setupTest 初始化测试数据库并返回清理函数
-func setupTest(t *testing.T) (Database, func()) {
-	_ = os.Remove(TestDBPath) // 清理旧文件
-	_ = os.Remove(TestDBPath + "-wal")
-	_ = os.Remove(TestDBPath + "-shm")
+func setupTest(t testing.TB) (Database, func()) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test_parade_stress.db")
 
-	db, err := NewSQLiteDB(TestDBPath)
+	db, err := NewSQLiteDB(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to init DB: %v", err)
 	}
 
 	return db, func() {
-		db.Close()
-		_ = os.Remove(TestDBPath)
-		_ = os.Remove(TestDBPath + "-wal")
-		_ = os.Remove(TestDBPath + "-shm")
+		if err := db.Close(); err != nil {
+			t.Errorf("failed to close test database: %v", err)
+		}
 	}
 }
 
@@ -78,7 +72,7 @@ func TestTransaction_AtomicRollback(t *testing.T) {
 	// 模拟事务执行，中间发生错误
 	err := db.RunInTx(ctx, func(tx DBTx) error {
 		_ = tx.InsertMessageTx(ctx, &Message{ID: "tx_1", HLC: "H1", Content: []byte("data")})
-		
+
 		// 模拟某种业务逻辑失败
 		return fmt.Errorf("simulated business error")
 	})
@@ -146,7 +140,8 @@ func TestConcurrency_HeavyMixedLoad(t *testing.T) {
 			defer wg.Done()
 			for {
 				select {
-				case <-stop: return
+				case <-stop:
+					return
 				default:
 					_ = db.InsertMessage(ctx, &Message{
 						ID:       fmt.Sprintf("msg_%d_%d", nodeIdx, rand.Intn(1000000)),
@@ -168,12 +163,13 @@ func TestConcurrency_HeavyMixedLoad(t *testing.T) {
 			tid := fmt.Sprintf("task_%d", taskIdx)
 			for {
 				select {
-				case <-stop: return
+				case <-stop:
+					return
 				default:
 					_ = db.UpsertFileLog(ctx, &FileLog{
-						TaskID: tid,
+						TaskID:      tid,
 						Transferred: rand.Int63n(1000),
-						UpdatedAt: time.Now(),
+						UpdatedAt:   time.Now(),
 					})
 					time.Sleep(time.Millisecond * 5)
 				}
@@ -188,7 +184,8 @@ func TestConcurrency_HeavyMixedLoad(t *testing.T) {
 			defer wg.Done()
 			for {
 				select {
-				case <-stop: return
+				case <-stop:
+					return
 				default:
 					_, _ = db.GetRecentMessages(ctx, 20, 0)
 					time.Sleep(time.Millisecond * 10)
@@ -215,8 +212,8 @@ func BenchmarkBatchInsert(b *testing.B) {
 		_ = db.RunInTx(ctx, func(tx DBTx) error {
 			for j := 0; j < 100; j++ {
 				_ = tx.InsertMessageTx(ctx, &Message{
-					ID: fmt.Sprintf("%d_%d", i, j),
-					HLC: fmt.Sprintf("%d", time.Now().UnixNano()),
+					ID:      fmt.Sprintf("%d_%d", i, j),
+					HLC:     fmt.Sprintf("%d", time.Now().UnixNano()),
 					Content: []byte("perf_test"),
 				})
 			}

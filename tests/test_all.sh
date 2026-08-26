@@ -99,17 +99,20 @@ FAIL_COUNT=$(echo "$SYNC_TEST_OUTPUT" | grep -c '^--- FAIL:')
 echo "    Correctness tests: $PASS_COUNT passed, $FAIL_COUNT failed"
 
 # ────────────────────────────────────────────────────────────────────────────
-# Phase 5: Cluster Integration Test (3-node)
+# Phase 5: Cluster Sync Integration (Go in-process tests)
+# The daemon has no --uds / daemon-process harness, so cluster coverage is
+# the truthful in-process Go integration suite (sync convergence + real
+# libp2p wire sync + stdio JSON-RPC full user flow). Exit status is real.
 # ────────────────────────────────────────────────────────────────────────────
-header "Phase 5: Cluster Integration Test (5-node)"
+header "Phase 5: Cluster Sync Integration (Go in-process tests)"
 
-CLUSTER_OUTPUT=$(PARADE_BIN="$PARADE_BIN" bash "$ROOT_DIR/tests/test_cluster.sh" 2>&1)
+CLUSTER_OUTPUT=$(bash "$ROOT_DIR/tests/test_cluster.sh" 2>&1)
 CLUSTER_EXIT=$?
 
 if [ "$CLUSTER_EXIT" -eq 0 ]; then
-    pass "cluster integration test PASSED"
+    pass "cluster sync integration tests PASSED"
 else
-    fail "cluster integration test FAILED"
+    fail "cluster sync integration tests FAILED"
 fi
 
 echo "$CLUSTER_OUTPUT" | grep -E '\[PASS\]|\[FAIL\]' | sed 's/^/    /'

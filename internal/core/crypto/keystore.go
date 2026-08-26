@@ -30,12 +30,28 @@ type paradeCrypto struct {
 	teamKeys      map[string][]byte // 多队伍对称密钥环
 	activeTeam    string            // 当前活跃的队伍 ID
 	loadWarnings  []error           // non-fatal warnings from LoadIdentity
+	teamKeysFile  string            // 队伍密钥持久化路径 (空 = 仅内存，不落盘)
 }
 
-func NewEngine() Engine {
-	return &paradeCrypto{
+// Option 配置新建的 crypto 引擎。
+type Option func(*paradeCrypto)
+
+// WithTeamKeysFile 设置加密队伍密钥的持久化路径（通常为 <data-dir>/.parade_teams）。
+// 未设置时队伍密钥仅保存在内存中，不读写任何磁盘文件。
+func WithTeamKeysFile(path string) Option {
+	return func(c *paradeCrypto) {
+		c.teamKeysFile = path
+	}
+}
+
+func NewEngine(opts ...Option) Engine {
+	c := &paradeCrypto{
 		teamKeys: make(map[string][]byte),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // 派生主密钥 (使用 Argon2id)
