@@ -26,6 +26,10 @@ type LogBroker struct {
 // maxEntries controls the size of the in-memory ring buffer.
 // The default minimum level is Debug.
 func NewLogBroker(filePath string, maxEntries int) (*LogBroker, error) {
+	if maxEntries <= 0 {
+		return nil, fmt.Errorf("logger: maxEntries must be positive, got %d", maxEntries)
+	}
+
 	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("logger: failed to open log file: %w", err)
@@ -40,7 +44,9 @@ func NewLogBroker(filePath string, maxEntries int) (*LogBroker, error) {
 }
 
 func (lb *LogBroker) log(level LogLevel, source, msg string) {
+	lb.mu.Lock()
 	if level < lb.minLevel {
+		lb.mu.Unlock()
 		return
 	}
 
@@ -51,17 +57,17 @@ func (lb *LogBroker) log(level LogLevel, source, msg string) {
 		Message:   msg,
 	}
 
-	lb.mu.Lock()
 	lb.buf[lb.head] = entry
 	lb.head = (lb.head + 1) % lb.maxEntries
 	if lb.count < lb.maxEntries {
 		lb.count++
 	}
+	cb := lb.callback
 	lb.mu.Unlock()
 
 	lb.writeToFile(entry)
 
-	if cb := lb.callback; cb != nil {
+	if cb != nil {
 		cb(entry)
 	}
 }
@@ -74,6 +80,12 @@ func (lb *LogBroker) writeToFile(entry LogEntry) {
 
 	lb.fileMu.Lock()
 	defer lb.fileMu.Unlock()
+
+	// Close clears lb.file while holding fileMu; logging after Close must
+	// neither panic nor write to a nil file.
+	if lb.file == nil {
+		return
+	}
 	fmt.Fprintf(lb.file, "%s\n", data)
 }
 

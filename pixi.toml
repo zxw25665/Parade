@@ -44,9 +44,10 @@ test-sync = "go test -v -count=1 ./internal/core/sync/..."
 test-sync-bench = "go test -bench=. ./internal/core/sync/..."
 
 # 完整测试套件（需先 build）
-test-all = { cmd = "./tests/test_all.sh", depends-on = ["build"] }
-test-cluster = { cmd = "./tests/test_cluster.sh", depends-on = ["build"] }
-test-backend = { cmd = "./tests/test_backend_fixes.sh", depends-on = ["build"] }
+# 显式经 bash 运行脚本，Windows 下需 Git Bash 的 bash 在 PATH 中
+test-all = { cmd = "bash ./tests/test_all.sh", depends-on = ["build"] }
+test-cluster = { cmd = "bash ./tests/test_cluster.sh", depends-on = ["build"] }
+test-backend = { cmd = "bash ./tests/test_backend_fixes.sh", depends-on = ["build"] }
 
 # ---- Lint ----
 vet = "go vet ./..."
@@ -64,6 +65,9 @@ dev = { cmd = "./scripts/dev.sh", depends-on = ["build", "frontend-install"] }
 
 [target.win-64.tasks]
 dev = { cmd = "scripts\\dev.bat", depends-on = ["build", "frontend-install"] }
+test-all = { cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File tests\\test_all.ps1", depends-on = ["build"] }
+test-cluster = { cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File tests\\test_cluster.ps1", depends-on = ["build"] }
+test-backend = { cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File tests\\test_backend.ps1", depends-on = ["build"] }
 
 # ---- Frontend ----
 frontend-install = { cmd = "pnpm install", cwd = "frontend" }

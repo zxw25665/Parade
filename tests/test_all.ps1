@@ -1,0 +1,9 @@
+$ErrorActionPreference = "Stop"
+
+go build ./cmd/parade/
+go test -count=1 ./...
+go test -race -count=1 ./...
+go vet ./...
+& "$PSScriptRoot\test_cluster.ps1"
+
+Write-Host "All Windows backend gates passed."

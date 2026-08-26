@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-DEPRECATED: This client previously connected via Unix Domain Socket.
-After the stdio refactor, the daemon uses stdin/stdout for IPC.
-Use a pipe-based approach instead.
+DEPRECATED — MANUAL USE ONLY.
 
-Example:
+Not invoked by any scripted test (tests/test_cluster.sh and the pixi test
+tasks run the Go integration suite instead).
+
+This client previously connected via Unix Domain Socket. After the stdio
+refactor, the daemon uses stdin/stdout for IPC. Each invocation spawns its
+own `parade daemon` process, so it is only suitable for one-shot manual
+inspection of a single daemon, never as a transport for multi-node tests.
+
+Manual example:
   echo '{"jsonrpc":"2.0","id":1,"method":"GetPubKey","params":null}' | parade daemon
 """
 
